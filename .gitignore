@@ -1,0 +1,23 @@
+# Compiled binaries
+transpose_direct
+transpose_buffered
+transpose_mpigpu
+transpose_staged
+transpose_ipc
+transpose_gpu_ipc
+transpose_gpu_mpi
+bench_ipc
+bench_mpi
+stencil_large_ipc
+stencil_large_mpi
+stencil_bench_*.cu
+test_ipc_win
+*.so
+build/
+
+# SLURM output
+*.out
+
+# Temp
+*.o
+*.d

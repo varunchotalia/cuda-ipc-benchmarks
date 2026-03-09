@@ -1,0 +1,58 @@
+# Transpose Benchmark — H200 GPUs, 100 iterations
+
+## 4 GPUs — Buffered IPC vs GPU-aware MPI vs Staged MPI
+Matrix Size | Mode           | GB/s
+------------|----------------|------
+1024²       | IPC (buffered) | 203.6
+1024²       | GPU-aware MPI  | 197.0
+1024²       | Staged MPI     |  75.1
+2048²       | IPC (buffered) | 545.0
+2048²       | GPU-aware MPI  | 535.2
+2048²       | Staged MPI     | 106.6
+4096²       | IPC (buffered) | 855.3
+4096²       | GPU-aware MPI  | 849.2
+4096²       | Staged MPI     | 100.8
+8192²       | IPC (buffered) | 1025.3
+8192²       | GPU-aware MPI  | 1022.6
+8192²       | Staged MPI     | 121.3
+16384²      | IPC (buffered) | 1064.7
+16384²      | GPU-aware MPI  | 1076.8
+16384²      | Staged MPI     | 102.0
+
+## 4 GPUs — Direct IPC vs GPU-aware MPI vs Staged MPI
+Matrix Size | Mode           | GB/s
+------------|----------------|------
+1024²       | IPC (direct)   | 258.9
+1024²       | GPU-aware MPI  | 195.2
+1024²       | Staged MPI     |  75.2
+2048²       | IPC (direct)   | 546.6
+2048²       | GPU-aware MPI  | 533.4
+2048²       | Staged MPI     |  96.2
+4096²       | IPC (direct)   | 691.0
+4096²       | GPU-aware MPI  | 844.8
+4096²       | Staged MPI     | 103.6
+8192²       | IPC (direct)   | 810.0
+8192²       | GPU-aware MPI  | 1021.9
+8192²       | Staged MPI     | 119.9
+16384²      | IPC (direct)   | 865.3
+16384²      | GPU-aware MPI  | 1076.7
+16384²      | Staged MPI     | 113.2
+
+## 2 GPUs — Buffered IPC vs GPU-aware MPI vs Staged MPI
+Matrix Size | Mode           | GB/s
+------------|----------------|------
+1024²       | IPC (buffered) | 389.3
+1024²       | GPU-aware MPI  | 361.9
+1024²       | Staged MPI     |  92.4
+2048²       | IPC (buffered) | 612.2
+2048²       | GPU-aware MPI  | 581.3
+2048²       | Staged MPI     | 104.7
+4096²       | IPC (buffered) | 727.0
+4096²       | GPU-aware MPI  | 693.7
+4096²       | Staged MPI     | 108.4
+8192²       | IPC (buffered) | 769.1
+8192²       | GPU-aware MPI  | 738.6
+8192²       | Staged MPI     | 105.6
+16384²      | IPC (buffered) | 772.4
+16384²      | GPU-aware MPI  | 742.0
+16384²      | Staged MPI     | 104.3
