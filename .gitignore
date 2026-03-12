@@ -21,3 +21,17 @@ build/
 # Temp
 *.o
 *.d
+# Root working copies (organized versions in subdirectories)
+/*.cu
+/*.cc
+/*.sh
+/*.sbatch
+/*.so
+/*.txt
+Makefile_nvshmem_build
+nvshmem_direct
+nvshmem_buffered
+transpose_ipc
+transpose_mpigpu
+transpose_staged
+.vscode/
