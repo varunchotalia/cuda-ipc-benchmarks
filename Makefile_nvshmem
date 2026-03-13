@@ -1,0 +1,28 @@
+NVCC       ?= nvcc
+MPI_HOME   ?= $(shell dirname $(shell dirname $(shell which mpicc)))
+NVSHMEM_HOME ?= /lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
+
+NVCCFLAGS  = -O3 -lineinfo -rdc=true
+GPU_ARCH   ?= -gencode arch=compute_90,code=sm_90
+
+INCLUDES   = -I$(NVSHMEM_HOME)/include -I$(MPI_HOME)/include
+LDFLAGS    = -L$(NVSHMEM_HOME)/lib -lnvshmem_host \
+             -L$(MPI_HOME)/lib -lmpi
+
+# Need to link device lib for device-side nvshmem calls (nvshmem_double_p)
+DEVICE_LIB = $(NVSHMEM_HOME)/lib/libnvshmem_device.a
+
+SRC = transpose_nvshmem_noaccum.cu
+
+all: nvshmem_direct nvshmem_buffered
+
+nvshmem_direct: $(SRC)
+	$(NVCC) $(NVCCFLAGS) $(GPU_ARCH) -DCOMM_MODE=0 $(INCLUDES) $< $(DEVICE_LIB) -o $@ $(LDFLAGS)
+
+nvshmem_buffered: $(SRC)
+	$(NVCC) $(NVCCFLAGS) $(GPU_ARCH) -DCOMM_MODE=1 $(INCLUDES) $< $(DEVICE_LIB) -o $@ $(LDFLAGS)
+
+clean:
+	rm -f nvshmem_direct nvshmem_buffered
+
+.PHONY: all clean
