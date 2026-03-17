@@ -35,3 +35,10 @@ transpose_ipc
 transpose_mpigpu
 transpose_staged
 .vscode/
+
+# Binaries
+ipc_*_noaccum
+nvshmem_direct
+nvshmem_buffered
+*.nsys-rep
+*.sqlite
