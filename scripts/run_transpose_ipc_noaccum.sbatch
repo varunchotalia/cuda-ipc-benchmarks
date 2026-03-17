@@ -9,7 +9,7 @@
 
 module load cuda12.8/toolkit/12.8.1 openmpi/gcc14.3/4.1.8 gcc/14.3.0
 
-SRC=transpose_cuda_ipc_noaccum.cu
+SRC=transpose_ipc_noaccum.cu
 MPI_INC=-I${MPI_HOME}/include
 MPI_LIB="-L${MPI_HOME}/lib -lmpi"
 ARCH="-gencode arch=compute_90,code=sm_90"

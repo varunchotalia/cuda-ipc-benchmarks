@@ -5,7 +5,7 @@ INCLUDES   = -I$(MPI_HOME)/include
 LDFLAGS    = -L$(MPI_HOME)/lib -lmpi
 GPU_ARCH   ?= -gencode arch=compute_90,code=sm_90
 
-SRC = transpose_cuda_ipc.cu
+SRC = transpose_ipc.cu
 
 all: transpose_direct transpose_buffered transpose_mpigpu transpose_staged
 

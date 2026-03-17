@@ -28,10 +28,10 @@ for SIZE in $SIZES; do
     echo "--- Grid size: ${SIZE} x ${SIZE} ---"
     
     # Compile with this grid size
-    sed "s/const int N = [0-9]*/const int N = $SIZE/" stencil_large_contiguous-3.cu | \
+    sed "s/const int N = [0-9]*/const int N = $SIZE/" stencil_ipc.cu | \
     sed "s/const int TOTAL_W = [0-9]*/const int TOTAL_W = $SIZE/" > stencil_bench_ipc.cu
     
-    sed "s/const int N = [0-9]*/const int N = $SIZE/" stencil_large_mpi-3.cu | \
+    sed "s/const int N = [0-9]*/const int N = $SIZE/" stencil_mpi.cu | \
     sed "s/const int TOTAL_W = [0-9]*/const int TOTAL_W = $SIZE/" > stencil_bench_mpi.cu
     
     nvcc -o bench_ipc stencil_bench_ipc.cu -lmpi -Wno-deprecated-gpu-targets 2>/dev/null
