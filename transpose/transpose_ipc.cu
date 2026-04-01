@@ -123,12 +123,14 @@ __global__ void transpose_all_peers_kernel(
     int src_ld,
     int Bo,
     int accumulate,
-    const int * __restrict__ send_to_list) /* send_to_list[z] = which peer for this z */
+    int my_ID,                            /* this rank's ID, to compute send_to inline */
+    int P)                                /* total number of ranks */
 {
     __shared__ double tile[TILE][TILE + 1];
 
-    int peer_idx = blockIdx.z;            /* which peer (0 = first remote peer) */
-    int send_to = send_to_list[peer_idx]; /* actual PE number */
+    /* peer_idx=0 corresponds to phase=1, peer_idx=1 to phase=2, etc. */
+    int peer_idx = blockIdx.z;
+    int send_to = (my_ID - (peer_idx + 1) + P) % P; /* actual PE number */
     int src_row_off = send_to * Bo;       /* which sub-block of A to read */
 
     /* Load tile from local A */
@@ -141,10 +143,10 @@ __global__ void transpose_all_peers_kernel(
             size_t idx = (size_t)(s_row + src_row_off) + (size_t)src_ld * (s_col + j);
             tile[threadIdx.y + j][threadIdx.x] = src[idx];
 #if ACCUMULATE
-            /* Only increment A once per element, not once per peer.
-               Use peer_idx == 0 to ensure single increment. */
-            if (peer_idx == 0)
-                src[idx] += 1.0;
+            /* Each z-block accesses a different, non-overlapping row range of A
+               (src_row_off = send_to * Bo, send_to is unique per z). Increment
+               unconditionally — there is no aliasing between z-blocks. */
+            src[idx] += 1.0;
 #endif
         }
     }
@@ -240,6 +242,11 @@ int main(int argc, char **argv)
     size_t col_elems = (size_t)order * Bo;
     size_t blk_elems = (size_t)Bo * Bo;
     size_t bytes     = 2ULL * sizeof(double) * order * order;
+    if (blk_elems > (size_t)INT_MAX) {
+        if (my_ID == 0) fprintf(stderr, "ERROR: Bo*Bo=%zu exceeds INT_MAX; MPI count overflow\n", blk_elems);
+        MPI_Finalize(); return 1;
+    }
+    int blk_count = (int)blk_elems;
 
     const char *comm_str[] = {"IPC direct", "IPC buffered", "GPU-aware MPI", "Staged MPI"};
     if (my_ID == 0) {
@@ -260,8 +267,7 @@ int main(int argc, char **argv)
 
     /* --- IPC DIRECT (mode 0) --- */
     double **peer_B = NULL;
-    double **peer_B_dev = NULL;     /* device copy of pointer array */
-    int    *send_to_dev = NULL;     /* device copy of send_to list */
+    double **peer_B_dev = NULL;     /* device copy of pointer array (indexed by PE) */
 
 #if COMM_MODE == 0
     if (P > 1) {
@@ -274,11 +280,9 @@ int main(int argc, char **argv)
                       all_handles, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
                       MPI_COMM_WORLD);
 
-        peer_B = (double **)malloc(P * sizeof(double *));
+        peer_B = (double **)calloc(P, sizeof(double *));
         for (int p = 0; p < P; p++) {
-            if (p == my_ID)
-                peer_B[p] = B_d;
-            else
+            if (p != my_ID)
                 CUDA_CHECK(cudaIpcOpenMemHandle(
                     (void **)&peer_B[p], all_handles[p],
                     cudaIpcMemLazyEnablePeerAccess));
@@ -286,19 +290,10 @@ int main(int argc, char **argv)
         free(all_handles);
 
 #if SINGLE_KERNEL
-        /* Copy pointer array to device so kernel can index it */
+        /* Copy pointer array to device so kernel can index it by PE number */
         CUDA_CHECK(cudaMalloc(&peer_B_dev, P * sizeof(double *)));
         CUDA_CHECK(cudaMemcpy(peer_B_dev, peer_B,
                               P * sizeof(double *), cudaMemcpyHostToDevice));
-
-        /* Build send_to list: for each z index, which peer to send to */
-        int *send_to_host = (int *)malloc((P - 1) * sizeof(int));
-        for (int phase = 1; phase < P; phase++)
-            send_to_host[phase - 1] = (my_ID - phase + P) % P;
-        CUDA_CHECK(cudaMalloc(&send_to_dev, (P - 1) * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(send_to_dev, send_to_host,
-                              (P - 1) * sizeof(int), cudaMemcpyHostToDevice));
-        free(send_to_host);
 #endif
         if (my_ID == 0) printf("IPC handles exchanged%s\n",
                                SINGLE_KERNEL ? " — single-kernel mode" : "");
@@ -396,7 +391,7 @@ int main(int argc, char **argv)
 
             transpose_all_peers_kernel<<<tgrd_all, tblk, 0, stream>>>(
                 peer_B_dev, order, colstart,
-                A_d, order, Bo, ACCUMULATE, send_to_dev);
+                A_d, order, Bo, ACCUMULATE, my_ID, P);
 
             CUDA_CHECK(cudaStreamSynchronize(stream));
             MPI_Barrier(MPI_COMM_WORLD);
@@ -405,7 +400,9 @@ int main(int argc, char **argv)
         /* === PER-PHASE LOOP === */
         for (int phase = 1; phase < P; phase++) {
             int send_to   = (my_ID - phase + P) % P;
+#if COMM_MODE != 0
             int recv_from = (my_ID + phase)     % P;
+#endif
 
 #if COMM_MODE == 0
             CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -444,8 +441,8 @@ int main(int argc, char **argv)
             CUDA_CHECK(cudaStreamSynchronize(stream));
 
             MPI_Sendrecv(
-                send_buf, (int)blk_elems, MPI_DOUBLE, send_to,   phase,
-                recv_buf, (int)blk_elems, MPI_DOUBLE, recv_from, phase,
+                send_buf, blk_count, MPI_DOUBLE, send_to,   phase,
+                recv_buf, blk_count, MPI_DOUBLE, recv_from, phase,
                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
@@ -462,8 +459,8 @@ int main(int argc, char **argv)
                                   blk_elems * sizeof(double),
                                   cudaMemcpyDeviceToHost));
             MPI_Sendrecv(
-                host_send, (int)blk_elems, MPI_DOUBLE, send_to,   phase,
-                host_recv, (int)blk_elems, MPI_DOUBLE, recv_from, phase,
+                host_send, blk_count, MPI_DOUBLE, send_to,   phase,
+                host_recv, blk_count, MPI_DOUBLE, recv_from, phase,
                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             CUDA_CHECK(cudaMemcpy(recv_buf, host_recv,
                                   blk_elems * sizeof(double),
@@ -508,13 +505,14 @@ int main(int argc, char **argv)
     MPI_Reduce(&abserr, &abserr_tot, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (my_ID == 0) {
-        if (abserr_tot < 1.0e-8) {
+        double abserr_per_elem = abserr_tot / ((double)order * order);
+        if (abserr_per_elem < 1.0e-8) {
             printf("Solution validates\n");
             double avgtime = max_time / (double)iterations;
             printf("Rate (MB/s): %lf  Avg time (s): %lf\n",
                    1.0e-06 * bytes / avgtime, avgtime);
         } else {
-            printf("ERROR: Aggregate error %e exceeds threshold\n", abserr_tot);
+            printf("ERROR: Per-element error %e exceeds threshold\n", abserr_per_elem);
         }
     }
 
@@ -528,7 +526,6 @@ int main(int argc, char **argv)
         free(peer_B);
 #if SINGLE_KERNEL
         CUDA_CHECK(cudaFree(peer_B_dev));
-        CUDA_CHECK(cudaFree(send_to_dev));
 #endif
     }
 #endif

@@ -180,8 +180,7 @@ __global__ void transpose_nvshmem_all_peers_kernel(
             size_t idx = (size_t)(s_row + src_row_off) + (size_t)order * (s_col + j);
             tile[threadIdx.y + j][threadIdx.x] = A_sym[idx];
 #if ACCUMULATE
-            if (peer_idx == 0)
-                A_sym[idx] += 1.0;
+            A_sym[idx] += 1.0;
 #endif
         }
     }
