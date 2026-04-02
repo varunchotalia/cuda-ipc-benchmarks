@@ -397,6 +397,7 @@ int main(int argc, char **argv)
 
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
                 B_sym, order, recv_from * Bo, recv_buf, Bo, ACCUMULATE);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
 #endif
         }
 #endif
