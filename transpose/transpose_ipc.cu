@@ -268,29 +268,21 @@ int main(int argc, char **argv)
     /* --- IPC DIRECT (mode 0) --- */
     double **peer_B = NULL;
     double **peer_B_dev = NULL;     /* device copy of pointer array (indexed by PE) */
+    MPI_Win win_B = MPI_WIN_NULL;
 
 #if COMM_MODE == 0
     if (P > 1) {
-        cudaIpcMemHandle_t my_handle;
-        CUDA_CHECK(cudaIpcGetMemHandle(&my_handle, B_d));
-
-        cudaIpcMemHandle_t *all_handles =
-            (cudaIpcMemHandle_t *)malloc(P * sizeof(cudaIpcMemHandle_t));
-        MPI_Allgather(&my_handle, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                      all_handles, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                      MPI_COMM_WORLD);
+        MPI_Win_create(B_d, col_elems * sizeof(double), 1,
+                       MPI_INFO_NULL, MPI_COMM_WORLD, &win_B);
 
         peer_B = (double **)calloc(P, sizeof(double *));
         for (int p = 0; p < P; p++) {
-            if (p != my_ID)
-                CUDA_CHECK(cudaIpcOpenMemHandle(
-                    (void **)&peer_B[p], all_handles[p],
-                    cudaIpcMemLazyEnablePeerAccess));
+            MPI_Aint sz; int disp;
+            MPI_Win_shared_query(win_B, p, &sz, &disp, &peer_B[p]);
         }
-        free(all_handles);
+        peer_B[my_ID] = NULL;   /* never write to own B via peer path */
 
 #if SINGLE_KERNEL
-        /* Copy pointer array to device so kernel can index it by PE number */
         CUDA_CHECK(cudaMalloc(&peer_B_dev, P * sizeof(double *)));
         CUDA_CHECK(cudaMemcpy(peer_B_dev, peer_B,
                               P * sizeof(double *), cudaMemcpyHostToDevice));
@@ -303,31 +295,21 @@ int main(int argc, char **argv)
     /* --- IPC BUFFERED (mode 1) --- */
     double *send_buf = NULL, *recv_buf = NULL;
     double **peer_recv = NULL;
+    MPI_Win win_recv = MPI_WIN_NULL;
 
 #if COMM_MODE == 1
     if (P > 1) {
         CUDA_CHECK(cudaMalloc(&send_buf, blk_elems * sizeof(double)));
         CUDA_CHECK(cudaMalloc(&recv_buf, blk_elems * sizeof(double)));
 
-        cudaIpcMemHandle_t my_handle;
-        CUDA_CHECK(cudaIpcGetMemHandle(&my_handle, recv_buf));
-
-        cudaIpcMemHandle_t *all_handles =
-            (cudaIpcMemHandle_t *)malloc(P * sizeof(cudaIpcMemHandle_t));
-        MPI_Allgather(&my_handle, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                      all_handles, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                      MPI_COMM_WORLD);
+        MPI_Win_create(recv_buf, blk_elems * sizeof(double), 1,
+                       MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv);
 
         peer_recv = (double **)malloc(P * sizeof(double *));
         for (int p = 0; p < P; p++) {
-            if (p == my_ID)
-                peer_recv[p] = recv_buf;
-            else
-                CUDA_CHECK(cudaIpcOpenMemHandle(
-                    (void **)&peer_recv[p], all_handles[p],
-                    cudaIpcMemLazyEnablePeerAccess));
+            MPI_Aint sz; int disp;
+            MPI_Win_shared_query(win_recv, p, &sz, &disp, &peer_recv[p]);
         }
-        free(all_handles);
     }
 #endif
 
@@ -522,8 +504,7 @@ int main(int argc, char **argv)
 
 #if COMM_MODE == 0
     if (P > 1) {
-        for (int p = 0; p < P; p++)
-            if (p != my_ID) CUDA_CHECK(cudaIpcCloseMemHandle(peer_B[p]));
+        MPI_Win_free(&win_B);
         free(peer_B);
 #if SINGLE_KERNEL
         CUDA_CHECK(cudaFree(peer_B_dev));
@@ -532,8 +513,7 @@ int main(int argc, char **argv)
 #endif
 #if COMM_MODE == 1
     if (P > 1) {
-        for (int p = 0; p < P; p++)
-            if (p != my_ID) CUDA_CHECK(cudaIpcCloseMemHandle(peer_recv[p]));
+        MPI_Win_free(&win_recv);
         free(peer_recv);
         CUDA_CHECK(cudaFree(send_buf));
         CUDA_CHECK(cudaFree(recv_buf));

@@ -171,35 +171,22 @@ int main(int argc, char** argv)
     double *peer_recv_L = NULL;  // left neighbor's RIGHT recv buffer
     double *peer_recv_R = NULL;  // right neighbor's LEFT recv buffer
 
-    // Get handles for both my receive buffers
-    cudaIpcMemHandle_t my_L_handle, my_R_handle;
-    cudaIpcGetMemHandle(&my_L_handle, d_ghost_recv_L);
-    cudaIpcGetMemHandle(&my_R_handle, d_ghost_recv_R);
+    // Create MPI windows over each recv buffer (intercepted by mpiwrap_ipc)
+    size_t ghost_bytes = (size_t)N * sizeof(double);
+    MPI_Win win_recv_L, win_recv_R;
+    MPI_Win_create(d_ghost_recv_L, ghost_bytes, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv_L);
+    MPI_Win_create(d_ghost_recv_R, ghost_bytes, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv_R);
 
-    // Gather all LEFT recv handles from all ranks
-    cudaIpcMemHandle_t *all_L_handles = new cudaIpcMemHandle_t[size];
-    cudaIpcMemHandle_t *all_R_handles = new cudaIpcMemHandle_t[size];
-    MPI_Allgather(&my_L_handle, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                  all_L_handles, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                  MPI_COMM_WORLD);
-    MPI_Allgather(&my_R_handle, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                  all_R_handles, sizeof(cudaIpcMemHandle_t), MPI_BYTE,
-                  MPI_COMM_WORLD);
-
-    // Open only my neighbors' buffers
-    // I write my LEFT edge → left neighbor's RIGHT recv buffer
+    // Query neighbors: I write my LEFT edge → left neighbor's RIGHT recv buffer
     if (left_rank >= 0) {
-        cudaIpcOpenMemHandle((void**)&peer_recv_L, all_R_handles[left_rank],
-                             cudaIpcMemLazyEnablePeerAccess);
+        MPI_Aint sz; int disp;
+        MPI_Win_shared_query(win_recv_R, left_rank, &sz, &disp, &peer_recv_L);
     }
     // I write my RIGHT edge → right neighbor's LEFT recv buffer
     if (right_rank >= 0) {
-        cudaIpcOpenMemHandle((void**)&peer_recv_R, all_L_handles[right_rank],
-                             cudaIpcMemLazyEnablePeerAccess);
+        MPI_Aint sz; int disp;
+        MPI_Win_shared_query(win_recv_L, right_rank, &sz, &disp, &peer_recv_R);
     }
-
-    delete[] all_L_handles;
-    delete[] all_R_handles;
 
     printf("[Rank %d] IPC setup complete\n", rank);
 
@@ -327,8 +314,8 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------------
     // Cleanup
     // ------------------------------------------------------------------------
-    if (peer_recv_L) cudaIpcCloseMemHandle(peer_recv_L);
-    if (peer_recv_R) cudaIpcCloseMemHandle(peer_recv_R);
+    MPI_Win_free(&win_recv_L);
+    MPI_Win_free(&win_recv_R);
     cudaFree(d_old);
     cudaFree(d_new);
     cudaFree(d_ghost_send_L);
