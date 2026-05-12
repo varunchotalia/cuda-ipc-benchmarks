@@ -258,12 +258,16 @@ int main(int argc, char **argv)
     }
 
     /* --- Allocate A and B --- */
-    double *A_d, *B_d;
+    double *A_d, *B_d = NULL;
     CUDA_CHECK(cudaMalloc(&A_d, col_elems * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&B_d, col_elems * sizeof(double)));
 
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
+
+    /* cuda_ipc info key signals MPI_Win_allocate to use cudaMalloc internally */
+    MPI_Info ipc_info;
+    MPI_Info_create(&ipc_info);
+    MPI_Info_set(ipc_info, "cuda_ipc", "1");
 
     /* --- IPC DIRECT (mode 0) --- */
     double **peer_B = NULL;
@@ -272,8 +276,8 @@ int main(int argc, char **argv)
 
 #if COMM_MODE == 0
     if (P > 1) {
-        MPI_Win_create(B_d, col_elems * sizeof(double), 1,
-                       MPI_INFO_NULL, MPI_COMM_WORLD, &win_B);
+        MPI_Win_allocate(col_elems * sizeof(double), 1,
+                         ipc_info, MPI_COMM_WORLD, &B_d, &win_B);
 
         peer_B = (double **)calloc(P, sizeof(double *));
         for (int p = 0; p < P; p++) {
@@ -289,7 +293,11 @@ int main(int argc, char **argv)
 #endif
         if (my_ID == 0) printf("IPC handles exchanged%s\n",
                                SINGLE_KERNEL ? " — single-kernel mode" : "");
+    } else {
+        CUDA_CHECK(cudaMalloc(&B_d, col_elems * sizeof(double)));
     }
+#else
+    CUDA_CHECK(cudaMalloc(&B_d, col_elems * sizeof(double)));
 #endif
 
     /* --- IPC BUFFERED (mode 1) --- */
@@ -300,10 +308,9 @@ int main(int argc, char **argv)
 #if COMM_MODE == 1
     if (P > 1) {
         CUDA_CHECK(cudaMalloc(&send_buf, blk_elems * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&recv_buf, blk_elems * sizeof(double)));
 
-        MPI_Win_create(recv_buf, blk_elems * sizeof(double), 1,
-                       MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv);
+        MPI_Win_allocate(blk_elems * sizeof(double), 1,
+                         ipc_info, MPI_COMM_WORLD, &recv_buf, &win_recv);
 
         peer_recv = (double **)malloc(P * sizeof(double *));
         for (int p = 0; p < P; p++) {
@@ -312,6 +319,8 @@ int main(int argc, char **argv)
         }
     }
 #endif
+
+    MPI_Info_free(&ipc_info);
 
     /* --- MPI MODES (2, 3) --- */
 #if COMM_MODE >= 2
@@ -415,6 +424,7 @@ int main(int argc, char **argv)
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
                 B_d, order, recv_from * Bo, recv_buf, Bo, ACCUMULATE);
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            MPI_Barrier(MPI_COMM_WORLD);
 
 #elif COMM_MODE == 2
             transpose_kernel<<<tgrd, tblk, 0, stream>>>(
@@ -513,10 +523,9 @@ int main(int argc, char **argv)
 #endif
 #if COMM_MODE == 1
     if (P > 1) {
-        MPI_Win_free(&win_recv);
+        MPI_Win_free(&win_recv);  /* also frees recv_buf */
         free(peer_recv);
         CUDA_CHECK(cudaFree(send_buf));
-        CUDA_CHECK(cudaFree(recv_buf));
     }
 #endif
 #if COMM_MODE >= 2
@@ -527,7 +536,12 @@ int main(int argc, char **argv)
 #endif
 
     CUDA_CHECK(cudaFree(A_d));
+#if COMM_MODE == 0
+    if (P == 1) CUDA_CHECK(cudaFree(B_d));
+    /* else MPI_Win_free already freed B_d */
+#else
     CUDA_CHECK(cudaFree(B_d));
+#endif
     free(B_h);
 
     MPI_Finalize();
