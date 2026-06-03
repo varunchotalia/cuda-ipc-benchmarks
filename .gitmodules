@@ -1,0 +1,3 @@
+[submodule "CloverLeaf"]
+	path = CloverLeaf
+	url = https://github.com/UoB-HPC/CloverLeaf
