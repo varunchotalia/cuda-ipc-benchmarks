@@ -10,6 +10,10 @@
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
 #SBATCH --output=lulesh_verify_%j.out
+# h200x8-03 is the only H200 SXM node (NVSwitch all-to-all); the others are
+# NVL with bridged NVLink groups. Pin to it so results are comparable
+# run-to-run; drop this line to benchmark the NVL nodes instead.
+#SBATCH --nodelist=h200x8-03
 
 module load cuda12.8/toolkit/12.8.0 openmpi/gcc14.3/4.1.8 gcc/14.3.0 2>/dev/null || \
 module load cuda12.8/toolkit/12.8.1 openmpi/gcc14.3/4.1.8 gcc/14.3.0
@@ -31,6 +35,7 @@ make -j8 all
 # h200x8-03 is H200 SXM (NVSwitch); -01/02/04 are H200 NVL (bridged) --
 # numbers are only comparable within the same node type
 echo "Node: $(hostname)"
+nvidia-smi topo -m
 
 SIZE=45
 VARIANTS="staged gpumpi shmwin ipc ipc_rp mpiwrap mpiwrap_rp nvshmem direct"
