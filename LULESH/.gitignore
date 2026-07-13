@@ -1,0 +1,10 @@
+# build artifacts
+build/
+*.o
+*.log
+*.tmp
+# run output
+xyz.asc
+# variant binaries
+lulesh_*
+.DS_Store
