@@ -41,9 +41,12 @@ for V in $VARIANTS; do
 done
 
 echo "======================================================================"
-echo "LULESH halo-exchange benchmark: 8 ranks (2x2x2), 8x H200 SXM (NVSwitch)"
+echo "LULESH halo-exchange benchmark: 8 ranks (2x2x2), h200x8 partition"
+echo "NOTE: h200x8-03 is H200 SXM (NVSwitch all-to-all); -01/02/04 are"
+echo "      H200 NVL (bridged NVLink groups) -- record which node ran"
 echo "staged | gpumpi | shmwin | ipc(+rp) | mpiwrap(+rp) | nvshmem | direct"
 echo "======================================================================"
+echo "Node: $(hostname)"
 
 # Problem sizes (edge elements per rank per side), iteration count
 SIZES="45 60 80 100"

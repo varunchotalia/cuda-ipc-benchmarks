@@ -51,12 +51,35 @@ Mode B details:
   send, stream-sync + barrier on exit) and supports only the structured
   `-s` path (the `-u` path never calls `SetupCommBuffers`).
 
+## Hardware: the nvwulf cluster (Stony Brook IACS)
+
+GPU-to-GPU interconnect differs per node type, which matters for every
+one-sided variant here ([cluster page](https://rci.stonybrook.edu/HPC/nvwulf/about)
+lists nodes but not interconnect; the table below is from Slurm node
+records, `nvidia-smi` device names in run logs, and `nvidia-smi topo -m`):
+
+| Partition | Nodes | GPUs per node | GPU-to-GPU interconnect |
+|-----------|-------|---------------|--------------------------|
+| `h200x8` | h200x8-03 | 8× H200 **SXM** (192 CPUs, ~2.2 TB) | NVSwitch: all-to-all NVLink |
+| `h200x8` | h200x8-01/02/04 | 8× H200 **NVL** (64 CPUs, ~1.4 TB) | NVLink bridges span 2–4-GPU groups; cross-group traffic is PCIe |
+| `h200x4` | h200x4-[01-04] | 4× H200 NVL | NVLink bridge group(s) |
+| `b40x4` | b40x4-[01-09] | 4× RTX PRO 6000 Blackwell | **no NVLink** — P2P is PCIe only (`NODE`/`SYS` in `nvidia-smi topo -m`) |
+
+Two consequences:
+
+- The `h200x8` partition is **heterogeneous**: a job may land on the SXM
+  node or an NVL node, and `nvidia-smi topo -m` differs between them.
+  Record the node (or GPU name: "H200" = SXM, "H200 NVL" = NVL) with any
+  number you intend to compare.
+- On `b40x4` the IPC/NVSHMEM variants still run, but all peer traffic is
+  PCIe — expect very different ratios than the H200 results below.
+
 ## Results
 
-Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks / 8× H200 SXM
-(NVSwitch), OpenMPI 4.1.8 + UCX pinned to `self,sm,cuda_copy,cuda_ipc`.
-All six variants reported the identical Final Origin Energy
-(`1.482403e+06` at the log's `%12.6e` precision):
+Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks on
+**h200x8-01 (8× H200 NVL, bridged NVLink)**, OpenMPI 4.1.8 + UCX pinned to
+`self,sm,cuda_copy,cuda_ipc`. All six variants reported the identical
+Final Origin Energy (`1.482403e+06` at the log's `%12.6e` precision):
 
 | Variant | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
 |---------|------------:|--------:|----------:|----------:|

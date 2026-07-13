@@ -73,9 +73,13 @@ results, file map, and build instructions.
 
 ## Hardware
 
-- NVIDIA H200 GPUs (141 GB HBM3e)
-- NVLink interconnect
-- Stony Brook University IACS cluster
+nvwulf cluster, Stony Brook University IACS. GPU interconnect differs per
+node type (details in [LULESH/cuda/README.md](LULESH/cuda/README.md)):
+
+- `h200x8-03`: 8× H200 SXM (141 GB HBM3e) — NVSwitch, all-to-all NVLink
+- `h200x8-01/02/04`, `h200x4`: H200 NVL — NVLink bridges span 2–4-GPU
+  groups; cross-group P2P traffic is PCIe
+- `b40x4`: 4× RTX PRO 6000 Blackwell — no NVLink, P2P is PCIe only
 
 ## Dependencies
 

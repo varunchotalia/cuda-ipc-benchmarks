@@ -28,6 +28,10 @@ MPIWRAP_LIB=/lustre/nvwulf/home/vchotalia/mpiwrap/mpi-intercept/libmpiwrap.so
 cd ~/mpiwrap/LULESH/cuda/src
 make -j8 all
 
+# h200x8-03 is H200 SXM (NVSwitch); -01/02/04 are H200 NVL (bridged) --
+# numbers are only comparable within the same node type
+echo "Node: $(hostname)"
+
 SIZE=45
 VARIANTS="staged gpumpi shmwin ipc ipc_rp mpiwrap mpiwrap_rp nvshmem direct"
 declare -A ENERGY ELAPSED FOM
