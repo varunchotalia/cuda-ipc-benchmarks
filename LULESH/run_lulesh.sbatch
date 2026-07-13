@@ -22,6 +22,9 @@ MPIWRAP_LIB="/lustre/nvwulf/home/vchotalia/mpiwrap/mpi-intercept/libmpiwrap.so"
 export NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
 export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
+# Pin UCX away from its broken CUDA-introspection path on these nodes
+export UCX_TLS=self,sm,cuda_copy,cuda_ipc
+export UCX_LOG_LEVEL=error
 
 cd "$SRCDIR"
 
@@ -30,7 +33,7 @@ cd "$SRCDIR"
  mpicxx -O2 -fPIC -shared mpiwrap_ipc.cc -I$CUDA_HOME/include \
         -L$CUDA_HOME/lib64 -lcudart -o libmpiwrap.so)
 make -j8 all 2>&1 | tee build_lulesh.log
-VARIANTS="staged gpumpi shmwin ipc mpiwrap nvshmem"
+VARIANTS="staged gpumpi shmwin ipc ipc_rp mpiwrap mpiwrap_rp nvshmem direct"
 for V in $VARIANTS; do
     if [ ! -f ./lulesh_$V ]; then
         echo "Build failed for lulesh_$V — check build_lulesh.log" && exit 1
@@ -39,7 +42,7 @@ done
 
 echo "======================================================================"
 echo "LULESH halo-exchange benchmark: 8 ranks (2x2x2), 8x H200 SXM (NVSwitch)"
-echo "staged | gpu-aware MPI | shm window | CUDA IPC | mpiwrap | NVSHMEM"
+echo "staged | gpumpi | shmwin | ipc(+rp) | mpiwrap(+rp) | nvshmem | direct"
 echo "======================================================================"
 
 # Problem sizes (edge elements per rank per side), iteration count
@@ -60,16 +63,14 @@ for SZ in $SIZES; do
 
     for V in $VARIANTS; do
         echo "[${V^^}]"
+        # window-over-device-memory paths need the LD_PRELOADed interceptor
+        case $V in
+            mpiwrap|mpiwrap_rp) PRELOAD="-x LD_PRELOAD=$MPIWRAP_LIB" ;;
+            *)                  PRELOAD="" ;;
+        esac
         # a crashed variant records empty metrics instead of killing the sweep
-        if [ "$V" == "mpiwrap" ]; then
-            # window-over-device-memory path: CUDA IPC supplied by the
-            # LD_PRELOADed interceptor
-            run_mpi -x LD_PRELOAD=$MPIWRAP_LIB ./lulesh_$V -s ${SZ} 0 ${ITERS} 2>&1 | tee run.tmp \
-                || echo "RUN FAILED: $V at size $SZ"
-        else
-            run_mpi ./lulesh_$V -s ${SZ} 0 ${ITERS} 2>&1 | tee run.tmp \
-                || echo "RUN FAILED: $V at size $SZ"
-        fi
+        run_mpi $PRELOAD ./lulesh_$V -s ${SZ} 0 ${ITERS} 2>&1 | tee run.tmp \
+            || echo "RUN FAILED: $V at size $SZ"
         ENERGY[$V]=$(awk '/Final Origin Energy/{print $5}' run.tmp)
         ELAPSED[$V]=$(awk '/Elapsed time/{print $4}' run.tmp)
         FOM[$V]=$(awk '/FOM/{print $3}' run.tmp)
