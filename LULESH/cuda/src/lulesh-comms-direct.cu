@@ -39,6 +39,14 @@
 
 static Real_t **s_peerField[NDIRECT_FIELDS] ;
 
+/* Pre-barrier snapshots of the local fields.  Senders must read their OWN
+   boundary values, but during the exchange epoch neighbors are concurrently
+   writing into those same shared-node locations; reading live fields would
+   forward already-augmented values (double-counting the SBN adds).  Each
+   rank snapshots its fields before the entry barrier -- i.e. before any
+   remote write can land -- and sends from the snapshot. */
+static Real_t *s_fieldSnap[NDIRECT_FIELDS] ;
+
 void commDirectMapFields(Domain* d)
 {
    Real_t* mine[NDIRECT_FIELDS] = {
@@ -72,6 +80,11 @@ void commDirectMapFields(Domain* d)
             MPI_Abort(MPI_COMM_WORLD, 1) ;
          }
       }
+      if (cudaMalloc(&s_fieldSnap[f], d->numNode*sizeof(Real_t)) != cudaSuccess) {
+         fprintf(stderr, "rank %d: cudaMalloc(field snapshot %d) failed\n",
+                 myRank, f) ;
+         MPI_Abort(MPI_COMM_WORLD, 1) ;
+      }
    }
    delete [] all ;
 }
@@ -86,6 +99,7 @@ void commDirectUnmapFields(Domain* d, int myRank)
          if (r != myRank) cudaIpcCloseMemHandle(s_peerField[f][r]) ;
       }
       delete [] s_peerField[f] ;
+      cudaFree(s_fieldSnap[f]) ;
    }
 }
 
@@ -257,7 +271,12 @@ void CommSendGpu(Domain& domain, Int_t msgType,
    bool planeMin = (domain.planeLoc() != 0), planeMax = (domain.planeLoc() != tp-1) ;
    const int block = 128 ;
 
-   /* resolve source pointers and the peer-field tables */
+   /* local producers of the fields must be done before we snapshot */
+   cudaDeviceSynchronize() ;
+
+   /* resolve peer-field tables and snapshot the sources: senders must read
+      their own pre-exchange values, and neighbors will be writing into the
+      live fields during the exchange epoch */
    const Real_t *src[6] ;
    Real_t **peer[6] ;
    for (Index_t fi = 0; fi < xferFields; ++fi) {
@@ -267,13 +286,16 @@ void CommSendGpu(Domain& domain, Int_t msgType,
                  (int)msgType) ;
          MPI_Abort(MPI_COMM_WORLD, 1) ;
       }
-      src[fi]  = &(domain.*fieldData[fi])(0) ;
       peer[fi] = s_peerField[f] ;
+      src[fi]  = s_fieldSnap[f] ;
+      cudaMemcpyAsync(s_fieldSnap[f], &(domain.*fieldData[fi])(0),
+                      domain.numNode*sizeof(Real_t),
+                      cudaMemcpyDeviceToDevice, stream) ;
    }
 
-   /* every rank must finish writing its own fields before any remote
-      write can land in them */
-   cudaDeviceSynchronize() ;
+   /* snapshots must be complete before the entry barrier: after the
+      barrier, remote writes may start landing in the live fields */
+   cudaStreamSynchronize(stream) ;
    MPI_Barrier(MPI_COMM_WORLD) ;
 
    /* faces: sender pack-type -> receiver unpack-type */
