@@ -61,8 +61,8 @@ records, `nvidia-smi` device names in run logs, and `nvidia-smi topo -m`):
 | Partition | Nodes | GPUs per node | GPU-to-GPU interconnect |
 |-----------|-------|---------------|--------------------------|
 | `h200x8` | h200x8-03 | 8× H200 **SXM** (192 CPUs, ~2.2 TB) | NVSwitch: all-to-all NVLink |
-| `h200x8` | h200x8-01/02/04 | 8× H200 **NVL** (64 CPUs, ~1.4 TB) | NVLink bridges span 2–4-GPU groups; cross-group traffic is PCIe |
-| `h200x4` | h200x4-[01-04] | 4× H200 NVL | NVLink bridge group(s) |
+| `h200x8` | h200x8-01/02/04 | 8× H200 **NVL** (64 CPUs, ~1.4 TB) | two 4-GPU NVLink islands (GPUs 0–3 and 4–7, all-to-all NV6 within an island, one island per socket); every cross-island pair is `SYS` = PCIe + UPI, no NVLink |
+| `h200x4` | h200x4-[01-04] | 4× H200 NVL | single socket; likely one 4-GPU NV6 island (not probed) |
 | `b40x4` | b40x4-[01-09] | 4× RTX PRO 6000 Blackwell | **no NVLink** — P2P is PCIe only (`NODE`/`SYS` in `nvidia-smi topo -m`) |
 
 Two consequences:
@@ -73,6 +73,10 @@ Two consequences:
   number you intend to compare.
 - On `b40x4` the IPC/NVSHMEM variants still run, but all peer traffic is
   PCIe — expect very different ratios than the H200 results below.
+- On the NVL nodes with the 2×2×2 rank decomposition, the plane-direction
+  halos — the largest messages — connect rank i to rank i+4, i.e. GPU
+  islands 0–3 to 4–7: **the biggest transfers ride PCIe + UPI, not
+  NVLink**. The results below were measured under that constraint.
 
 ## Results
 
