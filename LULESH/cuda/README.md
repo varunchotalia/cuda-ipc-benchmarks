@@ -81,32 +81,43 @@ Two consequences:
 ## Results
 
 Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks on
-**h200x8-01 (8× H200 NVL, bridged NVLink)**, OpenMPI 4.1.8 + UCX pinned to
-`self,sm,cuda_copy,cuda_ipc`. All six variants reported the identical
-Final Origin Energy (`1.482403e+06` at the log's `%12.6e` precision):
+**h200x8-03 (8× H200 SXM, NVSwitch all-to-all)**, OpenMPI 4.1.8 + UCX
+pinned to `self,sm,cuda_copy,cuda_ipc`. All nine binaries reported the
+identical Final Origin Energy (`1.482403e+06` at the log's `%12.6e`
+precision) — including `direct`, whose atomicAdd reordering stayed below
+printed precision:
 
-| Variant | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
-|---------|------------:|--------:|----------:|----------:|
-| ipc     | 1.94 | 0.617 | 1,184,149 | 1.38× |
-| mpiwrap | 1.94 | 0.617 | 1,181,271 | 1.38× |
-| nvshmem | 1.96 | 0.623 | 1,166,871 | 1.36× |
-| shmwin  | 2.17 | 0.690 | 1,054,471 | 1.23× |
-| staged  | 2.67 | 0.849 |   857,386 | 1.00× |
-| gpumpi  | 6.16 | 1.959 |   372,261 | 0.43× |
+| Variant | Mode | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
+|---------|------|------------:|--------:|----------:|----------:|
+| direct     | B | 1.28 | 0.407 | 1,796,653 | 2.78× |
+| ipc_rp     | C | 1.47 | 0.467 | 1,558,925 | 2.42× |
+| mpiwrap_rp | C | 1.48 | 0.470 | 1,552,615 | 2.41× |
+| ipc        | A | 1.75 | 0.556 | 1,307,411 | 2.03× |
+| nvshmem    | A | 1.76 | 0.560 | 1,304,443 | 2.02× |
+| mpiwrap    | A | 1.76 | 0.560 | 1,304,145 | 2.02× |
+| shmwin     | — | 2.09 | 0.665 | 1,095,799 | 1.70× |
+| gpumpi     | — | 2.47 | 0.785 |   928,940 | 1.44× |
+| staged     | — | 3.56 | 1.132 |   644,302 | 1.00× |
 
 Takeaways (single-run numbers at one size — quote with that caveat):
 
-- **mpiwrap ≡ ipc**: the interposer's portable-MPI-window abstraction costs
-  nothing over hand-written CUDA IPC.
-- **One-sided beats two-sided by ~1.4×** at this size; the problem is
-  kernel-launch-bound (~0.55 ms/iter compute floor), so this is a ~4×
-  reduction of the communication share.
-- **gpumpi is slowest**: per-message CUDA-aware MPI is a bad fit for
-  LULESH's 26 mostly-tiny messages × 3 phases.
+- **Each mode step pays off**: remote-pack (C) removes the local staging
+  copy and gains 16% over pack+copy (A); direct field writes (B) also
+  remove the unpack and gain another 13%. End to end, `direct` runs the
+  halo exchange 2.8× faster than staged MPI.
+- **mpiwrap ≡ ipc in every mode** (1.76 vs 1.75, 1.48 vs 1.47): the
+  interposer's portable-MPI-window abstraction costs nothing over
+  hand-written CUDA IPC.
+- **Node type matters**: mode A ipc measured 1.75 s here (all-to-all SXM)
+  vs 1.94 s on an NVL node, where the plane-direction halos cross the
+  4-GPU-island boundary over PCIe + UPI (~10% penalty).
+- **gpumpi and staged trail** — per-message two-sided MPI is a bad fit for
+  LULESH's 26 mostly-tiny messages × 3 phases per iteration.
 - Without UCX transport pinning, these nodes' default UCX selection floods
-  stderr with `cuCtxGetApiVersion` errors and slows two-sided MPI by up to
-  ~40×; the errors are steered around, not root-caused. Pin transports for
-  any number you intend to quote.
+  stderr with `cuCtxGetApiVersion` errors and can slow two-sided MPI by up
+  to ~40×; the errors are steered around, not root-caused. One staged run
+  also aborted with a Volume Error on freshly rebooted h200x8-03 and passed
+  on rerun — treat isolated failures there with suspicion.
 
 ## File map
 
