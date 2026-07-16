@@ -96,8 +96,17 @@ printed precision:
 | nvshmem    | A | 1.76 | 0.560 | 1,304,443 | 2.02× |
 | mpiwrap    | A | 1.76 | 0.560 | 1,304,145 | 2.02× |
 | shmwin     | — | 2.09 | 0.665 | 1,095,799 | 1.70× |
-| gpumpi     | — | 2.47 | 0.785 |   928,940 | 1.44× |
 | staged     | — | 3.56 | 1.132 |   644,302 | 1.00× |
+
+**gpumpi is deliberately excluded from the results.** CUDA-aware MPI
+through UCX is misconfigured or broken on this system: it emits
+`cuCtxGetApiVersion ... invalid device context` errors and performs
+poorly and inconsistently (2.47 s here, 6.16 s on an NVL node). Pinning
+or disabling the obvious UCX CUDA knobs did not fix it — at best the log
+level suppresses the error spam. Its numbers would measure this system's
+UCX configuration, not CUDA-aware MPI as a technique. The one-sided
+variants avoid that path entirely and staged host MPI runs cleanly, so
+those are the defensible baselines.
 
 Takeaways (single-run numbers at one size — quote with that caveat):
 
@@ -111,13 +120,14 @@ Takeaways (single-run numbers at one size — quote with that caveat):
 - **Node type matters**: mode A ipc measured 1.75 s here (all-to-all SXM)
   vs 1.94 s on an NVL node, where the plane-direction halos cross the
   4-GPU-island boundary over PCIe + UPI (~10% penalty).
-- **gpumpi and staged trail** — per-message two-sided MPI is a bad fit for
-  LULESH's 26 mostly-tiny messages × 3 phases per iteration.
-- Without UCX transport pinning, these nodes' default UCX selection floods
-  stderr with `cuCtxGetApiVersion` errors and can slow two-sided MPI by up
-  to ~40×; the errors are steered around, not root-caused. One staged run
-  also aborted with a Volume Error on freshly rebooted h200x8-03 and passed
-  on rerun — treat isolated failures there with suspicion.
+- **staged trails everything** — per-message two-sided MPI with host
+  staging is a bad fit for LULESH's 26 mostly-tiny messages × 3 phases
+  per iteration.
+- Without UCX transport pinning, the default UCX selection can slow even
+  host-staged MPI by large factors; the errors are steered around, not
+  root-caused (see the gpumpi note above). One staged run also aborted
+  with a Volume Error on freshly rebooted h200x8-03 and passed on rerun —
+  treat isolated failures there with suspicion.
 
 ## File map
 
