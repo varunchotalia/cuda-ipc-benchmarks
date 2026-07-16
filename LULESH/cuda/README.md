@@ -82,10 +82,20 @@ Two consequences:
 
 Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks on
 **h200x8-03 (8× H200 SXM, NVSwitch all-to-all)**, OpenMPI 4.1.8 + UCX
-pinned to `self,sm,cuda_copy,cuda_ipc`. All nine binaries reported the
-identical Final Origin Energy (`1.482403e+06` at the log's `%12.6e`
-precision) — including `direct`, whose atomicAdd reordering stayed below
-printed precision:
+pinned to `self,sm,cuda_copy,cuda_ipc`.
+
+**All nine variants passed correctness**: identical reported Final Origin
+Energy (`1.482403e+06` at the log's `%12.6e` precision) over the full run,
+including `direct`, whose atomicAdd reordering stayed below printed
+precision. **Eight defensible variants are reported in the main
+performance table**; gpumpi is deferred to the appendix note below.
+
+**Headline: the interposer is free.** `mpiwrap` matches `ipc` in mode A
+(1.76 vs 1.75 s) and `mpiwrap_rp` matches `ipc_rp` in mode C (1.48 vs
+1.47 s) — an application written against portable MPI windows, preloaded
+with `libmpiwrap.so`, performs identically to hand-written CUDA IPC in
+every mode where both exist. `direct` establishes the upper bound
+(2.78× over staged); mpiwrap establishes the project thesis.
 
 | Variant | Mode | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
 |---------|------|------------:|--------:|----------:|----------:|
@@ -98,36 +108,44 @@ printed precision:
 | shmwin     | — | 2.09 | 0.665 | 1,095,799 | 1.70× |
 | staged     | — | 3.56 | 1.132 |   644,302 | 1.00× |
 
-**gpumpi is deliberately excluded from the results.** CUDA-aware MPI
-through UCX is misconfigured or broken on this system: it emits
-`cuCtxGetApiVersion ... invalid device context` errors and performs
-poorly and inconsistently (2.47 s here, 6.16 s on an NVL node). Pinning
-or disabling the obvious UCX CUDA knobs did not fix it — at best the log
-level suppresses the error spam. Its numbers would measure this system's
-UCX configuration, not CUDA-aware MPI as a technique. The one-sided
-variants avoid that path entirely and staged host MPI runs cleanly, so
-those are the defensible baselines.
-
-Takeaways (single-run numbers at one size — quote with that caveat):
+Takeaways:
 
 - **Each mode step pays off**: remote-pack (C) removes the local staging
   copy and gains 16% over pack+copy (A); direct field writes (B) also
-  remove the unpack and gain another 13%. End to end, `direct` runs the
-  halo exchange 2.8× faster than staged MPI.
-- **mpiwrap ≡ ipc in every mode** (1.76 vs 1.75, 1.48 vs 1.47): the
-  interposer's portable-MPI-window abstraction costs nothing over
-  hand-written CUDA IPC.
+  remove the unpack and gain another 13%.
 - **Node type matters**: mode A ipc measured 1.75 s here (all-to-all SXM)
   vs 1.94 s on an NVL node, where the plane-direction halos cross the
   4-GPU-island boundary over PCIe + UPI (~10% penalty).
 - **staged trails everything** — per-message two-sided MPI with host
   staging is a bad fit for LULESH's 26 mostly-tiny messages × 3 phases
   per iteration.
-- Without UCX transport pinning, the default UCX selection can slow even
-  host-staged MPI by large factors; the errors are steered around, not
-  root-caused (see the gpumpi note above). One staged run also aborted
-  with a Volume Error on freshly rebooted h200x8-03 and passed on rerun —
-  treat isolated failures there with suspicion.
+
+Caveats:
+
+- Single-run numbers at one problem size; quote with that caveat.
+- UCX transports were pinned; the default selection can slow even
+  host-staged MPI by large factors (see the gpumpi appendix).
+- One staged run aborted with a Volume Error on freshly rebooted
+  h200x8-03 and passed on rerun — treat isolated failures there with
+  suspicion.
+
+### Appendix: gpumpi (CUDA-aware MPI) — correct but not reported
+
+gpumpi passed the energy check but is excluded from the performance
+table: CUDA-aware MPI through UCX is misconfigured or broken on this
+system. Signature, emitted per message until silenced by
+`UCX_LOG_LEVEL=error`:
+
+```
+cuda_iface.h:85 UCX ERROR cuCtxGetApiVersion(ctx, &version) failed: invalid device context
+```
+
+Its timings are poor and inconsistent — 2.47 s on the SXM node, 6.16 s on
+an NVL node — and pinning or disabling the obvious UCX CUDA knobs does
+not fix them. Those numbers would measure this system's UCX
+configuration, not CUDA-aware MPI as a technique; the one-sided variants
+avoid the UCX CUDA path entirely and staged host MPI runs cleanly, so
+those are the defensible baselines.
 
 ## File map
 
