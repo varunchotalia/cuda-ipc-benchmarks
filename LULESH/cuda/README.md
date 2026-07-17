@@ -15,7 +15,7 @@ Final Origin Energy on the full sedov run.
 | gpumpi | `lulesh_gpumpi` | `COMM_GPUMPI` | device pointers passed straight to CUDA-aware MPI | no |
 | shmwin | `lulesh_shmwin` | `COMM_SHMWIN` | GPU → peer's slice of an `MPI_Win_allocate_shared` host window → GPU; `Win_sync` + barriers | no |
 | ipc | `lulesh_ipc` | `COMM_IPC` | one D2D copy into the peer GPU's recv buffer via explicit `cudaIpcOpenMemHandle` mapping | no |
-| mpiwrap | `lulesh_mpiwrap` | `COMM_IPC IPC_VIA_MPIWRAP` | same data path as ipc, but the app only writes portable `MPI_Win_create` + `MPI_Win_shared_query`; CUDA IPC is supplied by the LD_PRELOADed `libmpiwrap.so` interposer | **yes** |
+| mpiwrap | `lulesh_mpiwrap` | `COMM_IPC IPC_VIA_MPIWRAP` | same data path as ipc, but the app only writes portable `MPI_Win_allocate` + `MPI_Win_shared_query`; the LD_PRELOADed `libmpiwrap.so` interposer supplies CUDA IPC (single node) or CUDA fabric handles (multi-node NVLink) underneath | **yes** |
 | nvshmem | `lulesh_nvshmem` | `COMM_NVSHMEM` | `nvshmemx_putmem_on_stream` into symmetric-heap recv buffers | no |
 
 The one-sided variants (shmwin / ipc / mpiwrap / nvshmem) post no receives:
@@ -50,6 +50,23 @@ Mode B details:
 - Needs stronger synchronization (device-sync + barrier on entry to every
   send, stream-sync + barrier on exit) and supports only the structured
   `-s` path (the `-u` path never calls `SetupCommBuffers`).
+
+## Portability: multi-node NVLink (GB200/GH200 NVL-class)
+
+The mpiwrap abstraction is what makes rack-scale NVLink reachable without
+touching the application: `lulesh_mpiwrap` speaks only `MPI_Win_allocate`
++ `MPI_Win_shared_query`, and the interposer picks the transport at
+runtime. On a single node it exchanges legacy CUDA-IPC handles (validated
+here). When the window's communicator spans nodes and the GPUs support
+`CU_MEM_HANDLE_TYPE_FABRIC` (NVL72-class systems with the IMEX daemon),
+it instead allocates via `cuMemCreate`, exchanges **fabric handles**, and
+maps every peer with `cuMemMap` — same `shared_query` semantics, NVLink
+loads/stores across node boundaries. The fabric branch is implemented and
+compiled but dormant on nvwulf (no multi-node NVLink here); it aborts
+with a clear message on systems with neither. The explicit `ipc`,
+`shmwin`, and `direct` backends remain single-node by construction.
+Untested caveats on a real NVL72: `-arch=sm_100` rebuild, aarch64 host
+toolchain, and LULESH's cubic rank counts vs 4-GPU OS instances.
 
 ## Hardware: the nvwulf cluster (Stony Brook IACS)
 

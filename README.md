@@ -22,7 +22,8 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │   └── omp_4.0/ openacc/ stdpar/      # unmodified upstream LULESH variants
 │
 ├── mpi-intercept/                  # MPI interposer library for transparent CUDA IPC
-│   ├── mpiwrap_ipc.cc                 # Intercepts MPI_Win_create/shared_query/free
+│   ├── mpiwrap_ipc.cc                 # Intercepts MPI_Win_create/allocate/shared_query/free;
+│   │                                  #   CUDA IPC on-node, CUDA fabric handles across NVLink nodes
 │   ├── test_ipc_win.cu                # Test program for the interposer
 │   └── CMakeLists.txt
 │
