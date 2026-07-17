@@ -28,6 +28,7 @@ build/
 /*.sbatch
 /*.so
 /*.txt
+!/CMakeLists.txt
 Makefile_nvshmem_build
 nvshmem_direct
 nvshmem_buffered
@@ -42,3 +43,4 @@ nvshmem_direct
 nvshmem_buffered
 *.nsys-rep
 *.sqlite
+build_cmake_test/

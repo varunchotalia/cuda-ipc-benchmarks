@@ -99,6 +99,26 @@ module load cuda12.8/toolkit/12.8.1 openmpi/gcc14.3/4.1.8 gcc/14.3.0
 
 ## Build & Run
 
+### Quick start: CMake (one build for everything)
+
+```bash
+# GB200 / NVL72: use -DCMAKE_CUDA_ARCHITECTURES=100 (default is 90 = H200)
+export NVSHMEM_HOME=/path/to/nvshmem        # optional: enables nvshmem targets
+cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100
+cmake --build build -j
+
+# scheduler-agnostic runner: transpose + stencil + LULESH at 8/27/64 ranks,
+# with LD_PRELOAD and energy cross-checks handled for you
+LAUNCH="srun --mpi=pmix -n" bash scripts/run_nvl72.sh    # or LAUNCH="mpirun -np"
+```
+
+On a multi-node NVLink system the interposer logs `fabric window: N ranks
+...` when the CUDA fabric-handle path (requires the IMEX daemon) is active;
+`N of M peers not IPC-reachable` means it degraded to per-peer hybrid
+IPC+MPI instead. transpose and stencil use `MPI_Win_allocate`, so their IPC
+modes ride the same interposer transports as LULESH's mpiwrap variants.
+The Makefile instructions below remain valid for per-benchmark builds.
+
 ### Build the MPI interposer library
 
 The IPC modes (`COMM_MODE=0,1`) require `libmpiwrap.so` at runtime for the `MPI_Win_create`/`MPI_Win_shared_query` intercept. A pre-built copy is in the repo root. To rebuild:

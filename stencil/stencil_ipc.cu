@@ -126,8 +126,19 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------------
     double *d_ghost_recv_L, *d_ghost_recv_R;   // peers write here
     double *d_ghost_send_L, *d_ghost_send_R;   // I pack my edges here
-    cudaMalloc(&d_ghost_recv_L, ghost_size);
-    cudaMalloc(&d_ghost_recv_R, ghost_size);
+    // recv buffers are window allocations: the interposer owns them, which
+    // lets it use CUDA IPC on-node or fabric handles across NVLink nodes
+    MPI_Win win_recv_L, win_recv_R;
+    {
+        MPI_Info ipc_info;
+        MPI_Info_create(&ipc_info);
+        MPI_Info_set(ipc_info, "cuda_ipc", "1");
+        MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
+                         &d_ghost_recv_L, &win_recv_L);
+        MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
+                         &d_ghost_recv_R, &win_recv_R);
+        MPI_Info_free(&ipc_info);
+    }
     cudaMalloc(&d_ghost_send_L, ghost_size);
     cudaMalloc(&d_ghost_send_R, ghost_size);
 
@@ -170,12 +181,6 @@ int main(int argc, char** argv)
 
     double *peer_recv_L = NULL;  // left neighbor's RIGHT recv buffer
     double *peer_recv_R = NULL;  // right neighbor's LEFT recv buffer
-
-    // Create MPI windows over each recv buffer (intercepted by mpiwrap_ipc)
-    size_t ghost_bytes = (size_t)N * sizeof(double);
-    MPI_Win win_recv_L, win_recv_R;
-    MPI_Win_create(d_ghost_recv_L, ghost_bytes, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv_L);
-    MPI_Win_create(d_ghost_recv_R, ghost_bytes, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win_recv_R);
 
     // Query neighbors: I write my LEFT edge → left neighbor's RIGHT recv buffer
     if (left_rank >= 0) {
@@ -320,8 +325,7 @@ int main(int argc, char** argv)
     cudaFree(d_new);
     cudaFree(d_ghost_send_L);
     cudaFree(d_ghost_send_R);
-    cudaFree(d_ghost_recv_L);
-    cudaFree(d_ghost_recv_R);
+
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_stop);
 
