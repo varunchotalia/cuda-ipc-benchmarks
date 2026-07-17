@@ -108,6 +108,10 @@ every mode where both exist. `direct` establishes the upper bound
 | shmwin     | — | 2.09 | 0.665 | 1,095,799 | 1.70× |
 | staged     | — | 3.56 | 1.132 |   644,302 | 1.00× |
 
+![LULESH halo-exchange variants](../../plots/lulesh_variants_sxm.png)
+
+![Send modes: ipc vs mpiwrap](../../plots/lulesh_modes_sxm.png)
+
 Takeaways:
 
 - **Each mode step pays off**: remote-pack (C) removes the local staging

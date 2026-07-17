@@ -28,7 +28,9 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │
 ├── plots/                          # Benchmark visualizations
 │   ├── transpose_benchmark_ipc_nvshmem.png
-│   └── transpose_stencil_comparison.png
+│   ├── transpose_stencil_comparison.png
+│   ├── lulesh_variants_sxm.png        # LULESH: all defensible variants
+│   └── lulesh_modes_sxm.png           # LULESH: send modes, ipc vs mpiwrap
 │
 ├── results/                        # Tabulated benchmark data
 │   ├── transpose_results.md
