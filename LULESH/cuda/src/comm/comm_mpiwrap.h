@@ -28,16 +28,26 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
                     &d->ipcWin) ;
    MPI_Info_free(&info) ;
    d->d_peerRecv = new Real_t*[d->m_numRanks] ;
+   int nFallback = 0 ;
    for (int r = 0; r < d->m_numRanks; ++r) {
       MPI_Aint sz ;
       int disp ;
       if (MPI_Win_shared_query(d->ipcWin, r, &sz, &disp,
-                               (void **)&d->d_peerRecv[r]) != MPI_SUCCESS
-          || d->d_peerRecv[r] == NULL) {
-         fprintf(stderr, "rank %d: MPI_Win_shared_query failed for rank %d "
-                         "-- run with LD_PRELOAD=libmpiwrap.so\n", myRank, r) ;
+                               (void **)&d->d_peerRecv[r]) != MPI_SUCCESS) {
+         d->d_peerRecv[r] = NULL ;
+      }
+      if (r == myRank && d->d_peerRecv[r] == NULL) {
+         // self-query always succeeds under the interposer
+         fprintf(stderr, "rank %d: MPI_Win_shared_query failed for self "
+                         "-- run with LD_PRELOAD=libmpiwrap.so\n", myRank) ;
          MPI_Abort(MPI_COMM_WORLD, 1) ;
       }
+      if (r != myRank && d->d_peerRecv[r] == NULL) ++nFallback ;
+   }
+   if (myRank == 0 && nFallback > 0) {
+      printf("mpiwrap: %d of %d peers not IPC-reachable, using MPI "
+             "send/recv fallback for them\n", nFallback,
+             (int)d->m_numRanks - 1) ;
    }
 }
 

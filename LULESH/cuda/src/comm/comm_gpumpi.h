@@ -23,7 +23,7 @@ static inline void commTeardown(Domain* d, int myRank)
 #define COMM_RUNTIME_INIT()     ((void)0)
 #define COMM_RUNTIME_SHUTDOWN() cudaDeviceReset()
 
-#define COMM_RECV_SKIP(domain) (0)
+#define COMM_RECV_SKIP(domain, msgType, xferFields, dx, dy, dz, doRecv, planeOnly) (0)
 // After init, receives land straight in the device buffer.  The device
 // sync keeps MPI from overwriting regions the previous phase's async
 // unpack copies are still reading.

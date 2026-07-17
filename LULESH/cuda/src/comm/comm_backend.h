@@ -122,7 +122,7 @@ static inline Index_t shmRecvOffset(Domain& domain, int recvRank,
 // buffer.  Remote-pack backends override this to point straight into the
 // peer's mapped recv buffer.
 #ifndef COMM_PACK_DEST
-#define COMM_PACK_DEST(domain, toRank, dc, dr, dp, localPtr, xferFields, doSend, planeOnly) \
+#define COMM_PACK_DEST(domain, toRank, dc, dr, dp, localPtr, xferFields, doSend, planeOnly, msgType) \
    (localPtr)
 #endif
 

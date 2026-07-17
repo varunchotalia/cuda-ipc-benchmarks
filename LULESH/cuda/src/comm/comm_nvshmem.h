@@ -54,7 +54,8 @@ static inline int commRecvSkip(Domain& domain)
    MPI_Barrier(MPI_COMM_WORLD) ;
    return 1 ;
 }
-#define COMM_RECV_SKIP(domain)     commRecvSkip(domain)
+#define COMM_RECV_SKIP(domain, msgType, xferFields, dx, dy, dz, doRecv, planeOnly) \
+   commRecvSkip(domain)
 #define COMM_RECV_POST_BUF(domain) ((domain).commDataRecv)
 #define COMM_RECV_BASE(domain)     ((domain).d_commDataRecv)
 

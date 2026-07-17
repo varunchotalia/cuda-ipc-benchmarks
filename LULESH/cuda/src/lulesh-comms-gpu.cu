@@ -397,7 +397,7 @@ void CommSendGpu(Domain& domain, int msgType,
 
       if (planeMin) {
          d_destAddr = COMM_PACK_DEST(domain, myRank - domain.tp()*domain.tp(), 0, 0, 1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0 ; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<0><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -412,7 +412,7 @@ void CommSendGpu(Domain& domain, int msgType,
       }
       if (planeMax && doSend) {
          d_destAddr = COMM_PACK_DEST(domain, myRank + domain.tp()*domain.tp(), 0, 0, -1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0 ; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<1><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -432,7 +432,7 @@ void CommSendGpu(Domain& domain, int msgType,
 
       if (rowMin) {
          d_destAddr = COMM_PACK_DEST(domain, myRank - domain.tp(), 0, 1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<2><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -447,7 +447,7 @@ void CommSendGpu(Domain& domain, int msgType,
       }
       if (rowMax && doSend) {
          d_destAddr = COMM_PACK_DEST(domain, myRank + domain.tp(), 0, -1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<3><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -467,7 +467,7 @@ void CommSendGpu(Domain& domain, int msgType,
 
       if (colMin) {
          d_destAddr = COMM_PACK_DEST(domain, myRank - 1, 1, 0, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<4><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -482,7 +482,7 @@ void CommSendGpu(Domain& domain, int msgType,
       }
       if (colMax && doSend) {
          d_destAddr = COMM_PACK_DEST(domain, myRank + 1, -1, 0, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendPlane<5><<<(sendCount+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), sendCount, dx, dy, dz);
@@ -501,7 +501,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMin && colMin) {
          int toRank = myRank - domain.tp() - 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 1, 1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<0><<<(dz+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dz, dx, dy, dz);
@@ -518,7 +518,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMin && planeMin) {
          int toRank = myRank - domain.tp()*domain.tp() - domain.tp() ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 0, 1, 1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<1><<<(dx+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dx, dx, dy, dz);
@@ -535,7 +535,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (colMin && planeMin) {
          int toRank = myRank - domain.tp()*domain.tp() - 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 1, 0, 1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<2><<<(dy+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dy, dx, dy, dz);
@@ -552,7 +552,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMax && colMax && doSend) {
          int toRank = myRank + domain.tp() + 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, -1, -1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<3><<<(dz+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dz, dx, dy, dz);
@@ -569,7 +569,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMax && planeMax && doSend) {
          int toRank = myRank + domain.tp()*domain.tp() + domain.tp() ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 0, -1, -1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<4><<<(dx+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dx, dx, dy, dz);
@@ -586,7 +586,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (colMax && planeMax && doSend) {
          int toRank = myRank + domain.tp()*domain.tp() + 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, -1, 0, -1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<5><<<(dy+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dy, dx, dy, dz);
@@ -603,7 +603,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMax && colMin && doSend) {
          int toRank = myRank + domain.tp() - 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 1, -1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<6><<<(dz+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dz, dx, dy, dz);
@@ -620,7 +620,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMin && planeMax && doSend) {
          int toRank = myRank + domain.tp()*domain.tp() - domain.tp() ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 0, 1, -1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<7><<<(dx+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dx, dx, dy, dz);
@@ -637,7 +637,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (colMin && planeMax && doSend) {
          int toRank = myRank + domain.tp()*domain.tp() - 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 1, 0, -1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<8><<<(dy+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dy, dx, dy, dz);
@@ -654,7 +654,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMin && colMax) {
          int toRank = myRank - domain.tp() + 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, -1, 1, 0,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<9><<<(dz+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dz, dx, dy, dz);
@@ -671,7 +671,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (rowMax && planeMin) {
          int toRank = myRank - domain.tp()*domain.tp() + domain.tp() ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, 0, -1, 1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<10><<<(dx+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dx, dx, dy, dz);
@@ -688,7 +688,7 @@ void CommSendGpu(Domain& domain, int msgType,
       if (colMax && planeMin) {
          int toRank = myRank - domain.tp()*domain.tp() + 1 ;
          d_destAddr = COMM_PACK_DEST(domain, toRank, -1, 0, 1,
-            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly) ;
+            &domain.d_commDataSend[pmsg * maxPlaneComm + emsg * maxEdgeComm], xferFields, doSend, planeOnly, msgType) ;
          for (Index_t fi=0; fi<xferFields; ++fi) {
             Domain_member src = fieldData[fi] ;
 	    SendEdge<11><<<(dy+block-1)/block,block,0,stream>>>(d_destAddr, &(domain.*src)(0), dy, dx, dy, dz);

@@ -199,7 +199,12 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     MPI_Allgather(&my_handle, sizeof(my_handle), MPI_BYTE,
                   handles, sizeof(my_handle), MPI_BYTE, comm);
 
-    int rc = PMPI_Win_create(base, size, disp, info, comm, win);
+    // spanning communicators get a zero-size key window: the app only uses
+    // the handle for shared_query/free, and registering device memory with
+    // the MPI library across nodes is exactly what we are bypassing
+    int rc = ranks_span_nodes(comm)
+                 ? PMPI_Win_create(NULL, 0, disp, info, comm, win)
+                 : PMPI_Win_create(base, size, disp, info, comm, win);
     if (rc != MPI_SUCCESS) MPI_Abort(comm, rc);
 
     auto* m = new WinMeta();
@@ -230,9 +235,10 @@ int MPI_Win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
         if (allok)
             return fabric_win_allocate(size, disp_unit, info, comm, baseptr, win);
 #endif
-        LOG("FATAL: window spans nodes and CUDA fabric handles are "
-            "unavailable (multi-node NVLink + IMEX required)");
-        MPI_Abort(comm, 1);
+        LOG("window spans nodes without fabric support: same-node peers map "
+            "via CUDA IPC; shared_query fails for remote peers so the app "
+            "can fall back to MPI for them");
+        // fall through: legacy per-peer IPC with lazy opens
     }
 
     void* d_ptr;

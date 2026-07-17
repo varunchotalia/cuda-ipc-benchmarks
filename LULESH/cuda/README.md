@@ -22,9 +22,29 @@ The one-sided variants (shmwin / ipc / mpiwrap / nvshmem) post no receives:
 the sender computes the destination offset inside the *receiver's* recv
 buffer with `shmRecvOffset()` (which replays `CommRecv`'s message-ordering
 bookkeeping for the receiver's boundary booleans) and writes the data there
-directly. Completion is a barrier-based epoch instead of recv completion.
-The init-time nodalMass exchange stays host-packed plain MPI in every
-variant; one-sided backends activate afterwards (`g_commActive`).
+directly. The init-time nodalMass exchange stays host-packed plain MPI in
+every variant; one-sided backends activate afterwards (`g_commActive`).
+
+**Synchronization (IPC/mpiwrap family)** is per-neighbor, not global:
+zero-byte token messages mirror the original send/recv matching. Receivers
+post zero-byte Irecvs in the same `recvRequest` slots real messages used —
+so the unpack routines' per-message `MPI_Wait`s become genuine arrival
+sync unchanged — plus a "buffer free" token (tag `msgType+1`) to each
+in-neighbor; senders wait for that before putting and send a "delivered"
+token (tag `msgType`) after their stream sync. Cost is O(neighbors) per
+phase and scales with node count, where a barrier costs O(all ranks).
+shmwin and nvshmem keep barrier epochs (node-bounded and NVSHMEM-native
+respectively), as does direct — mode B's field-readiness dependency is
+global, not per-neighbor.
+
+**Hybrid transport**: `d_peerRecv[r] == NULL` is a valid state meaning
+"rank r is not IPC-reachable" (decided by node-locality at setup, or by a
+failed `shared_query` under the interposer, which degrades per-peer
+instead of aborting). Such peers fall back to real MPI send/recv of the
+same packed messages, with receives posted into the device recv buffer —
+so mixed runs (IPC on-node, MPI between nodes) work with unchanged unpack
+logic. The fallback passes device pointers to MPI and therefore needs a
+working CUDA-aware MPI; it never triggers on single-node runs.
 
 ## The three send modes (IPC/mpiwrap family)
 

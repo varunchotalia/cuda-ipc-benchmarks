@@ -104,7 +104,7 @@ void CommRecv(Domain& domain, int msgType, Index_t xferFields,
    MPI_Comm_rank(MPI_COMM_WORLD, &myRank) ;
 
    /* one-sided backends synchronize here instead of posting receives */
-   if (COMM_RECV_SKIP(domain)) {
+   if (COMM_RECV_SKIP(domain, msgType, xferFields, dx, dy, dz, doRecv, planeOnly)) {
       return ;
    }
    Real_t *recvBuf = COMM_RECV_POST_BUF(domain) ;

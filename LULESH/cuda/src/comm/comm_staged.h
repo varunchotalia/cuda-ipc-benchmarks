@@ -22,7 +22,7 @@ static inline void commTeardown(Domain* d, int myRank)
 #define COMM_RUNTIME_INIT()     ((void)0)
 #define COMM_RUNTIME_SHUTDOWN() cudaDeviceReset()
 
-#define COMM_RECV_SKIP(domain)     (0)
+#define COMM_RECV_SKIP(domain, msgType, xferFields, dx, dy, dz, doRecv, planeOnly) (0)
 #define COMM_RECV_POST_BUF(domain) ((domain).commDataRecv)
 #define COMM_RECV_BASE(domain)     ((domain).commDataRecv)
 
