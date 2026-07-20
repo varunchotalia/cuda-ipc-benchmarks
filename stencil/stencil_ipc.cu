@@ -211,16 +211,33 @@ int main(int argc, char** argv)
 
     double *peer_recv_L = NULL;  // left neighbor's RIGHT recv buffer
     double *peer_recv_R = NULL;  // right neighbor's LEFT recv buffer
+    bool ipc_ok_L = false, ipc_ok_R = false;  // does the IPC put actually work?
 
-    // Query neighbors: I write my LEFT edge → left neighbor's RIGHT recv buffer
+    // Query neighbors: I write my LEFT edge → left neighbor's RIGHT recv buffer.
+    // shared_query can fail -- another node, or a GPU-island boundary with no
+    // P2P even on the same node -- never assume it succeeded: an unchecked
+    // NULL peer pointer written to next iteration is a silent illegal-memory
+    // access that can hang or fault the GPU.
     if (left_rank >= 0) {
         MPI_Aint sz; int disp;
-        MPI_Win_shared_query(win_recv_R, left_rank, &sz, &disp, &peer_recv_L);
+        ipc_ok_L = (MPI_Win_shared_query(win_recv_R, left_rank, &sz, &disp,
+                                         &peer_recv_L) == MPI_SUCCESS)
+                   && peer_recv_L != NULL;
+        if (!ipc_ok_L) peer_recv_L = NULL;
     }
     // I write my RIGHT edge → right neighbor's LEFT recv buffer
     if (right_rank >= 0) {
         MPI_Aint sz; int disp;
-        MPI_Win_shared_query(win_recv_L, right_rank, &sz, &disp, &peer_recv_R);
+        ipc_ok_R = (MPI_Win_shared_query(win_recv_L, right_rank, &sz, &disp,
+                                         &peer_recv_R) == MPI_SUCCESS)
+                   && peer_recv_R != NULL;
+        if (!ipc_ok_R) peer_recv_R = NULL;
+    }
+    if ((left_rank >= 0 && !ipc_ok_L) || (right_rank >= 0 && !ipc_ok_R)) {
+        printf("[Rank %d] not IPC-reachable: left=%s right=%s -- using MPI "
+               "send/recv fallback\n", rank,
+               (left_rank >= 0 && !ipc_ok_L) ? "fallback" : "n/a",
+               (right_rank >= 0 && !ipc_ok_R) ? "fallback" : "n/a");
     }
 
     printf("[Rank %d] IPC setup complete\n", rank);
@@ -251,14 +268,29 @@ int main(int argc, char** argv)
     for (int iter = 0; iter < iterations; iter++) {
 
         // === GHOST EXCHANGE ===
+        // tag 0 = data flowing rightward (X's right edge -> X+1's left ghost)
+        // tag 1 = data flowing leftward  (X's left edge  -> X-1's right ghost)
+        MPI_Request greqs[4]; int ngreq = 0;
+
+        // Post fallback receives before anyone might send
+        if (left_rank >= 0 && !ipc_ok_L) {
+            MPI_Irecv(d_ghost_recv_L, N, MPI_DOUBLE, left_rank, 0,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+        if (right_rank >= 0 && !ipc_ok_R) {
+            MPI_Irecv(d_ghost_recv_R, N, MPI_DOUBLE, right_rank, 1,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
 
         // Pack and send LEFT edge (col 1) to left neighbor
         if (left_rank >= 0) {
             pack_edge<<<copy_blocks, copy_threads>>>(
                 d_old, d_ghost_send_L, N, pitch, 1
             );
-            cudaMemcpyAsync(peer_recv_L, d_ghost_send_L, ghost_size,
-                            cudaMemcpyDeviceToDevice);
+            if (ipc_ok_L) {
+                cudaMemcpyAsync(peer_recv_L, d_ghost_send_L, ghost_size,
+                                cudaMemcpyDeviceToDevice);
+            }
         }
 
         // Pack and send RIGHT edge (col W) to right neighbor
@@ -266,11 +298,24 @@ int main(int argc, char** argv)
             pack_edge<<<copy_blocks, copy_threads>>>(
                 d_old, d_ghost_send_R, N, pitch, W
             );
-            cudaMemcpyAsync(peer_recv_R, d_ghost_send_R, ghost_size,
-                            cudaMemcpyDeviceToDevice);
+            if (ipc_ok_R) {
+                cudaMemcpyAsync(peer_recv_R, d_ghost_send_R, ghost_size,
+                                cudaMemcpyDeviceToDevice);
+            }
         }
 
-        cudaDeviceSynchronize();
+        cudaDeviceSynchronize();  // pack kernels + any IPC D2D copies done
+
+        if (left_rank >= 0 && !ipc_ok_L) {
+            MPI_Isend(d_ghost_send_L, N, MPI_DOUBLE, left_rank, 1,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+        if (right_rank >= 0 && !ipc_ok_R) {
+            MPI_Isend(d_ghost_send_R, N, MPI_DOUBLE, right_rank, 0,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+        if (ngreq > 0) MPI_Waitall(ngreq, greqs, MPI_STATUSES_IGNORE);
+
         MPI_Barrier(MPI_COMM_WORLD);
 
         // Unpack received ghosts into my grid

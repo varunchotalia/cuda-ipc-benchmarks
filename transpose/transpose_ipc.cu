@@ -302,26 +302,59 @@ int main(int argc, char **argv)
     double **peer_B = NULL;
     double **peer_B_dev = NULL;     /* device copy of pointer array (indexed by PE) */
     MPI_Win win_B = MPI_WIN_NULL;
+    bool *ipc_ok_B = NULL;          /* per-peer: kernel can write via peer_B[p] */
+    double *fb_send = NULL, *fb_recv = NULL;   /* MPI fallback scratch (unreachable peers) */
 
 #if COMM_MODE == 0
     if (P > 1) {
         MPI_Win_allocate(col_elems * sizeof(double), 1,
                          ipc_info, MPI_COMM_WORLD, &B_d, &win_B);
 
-        peer_B = (double **)calloc(P, sizeof(double *));
+        /* MPI_Win_shared_query can fail per peer -- on another node without
+           fabric handles, or same-node across a GPU-island boundary with no
+           P2P.  Never assume it succeeded: an unchecked NULL peer pointer
+           written to by a later kernel is a silent illegal-memory-access
+           that can hang or fault the GPU. */
+        peer_B  = (double **)calloc(P, sizeof(double *));
+        ipc_ok_B = (bool *)calloc(P, sizeof(bool));
+        int nFallback = 0;
         for (int p = 0; p < P; p++) {
+            if (p == my_ID) continue;   /* never write to own B via peer path */
             MPI_Aint sz; int disp;
-            MPI_Win_shared_query(win_B, p, &sz, &disp, &peer_B[p]);
+            if (MPI_Win_shared_query(win_B, p, &sz, &disp, &peer_B[p]) == MPI_SUCCESS
+                && peer_B[p] != NULL) {
+                ipc_ok_B[p] = true;
+            } else {
+                peer_B[p] = NULL;
+                ++nFallback;
+            }
         }
-        peer_B[my_ID] = NULL;   /* never write to own B via peer path */
 
 #if SINGLE_KERNEL
+        if (nFallback > 0) {
+            fprintf(stderr,
+                "transpose_direct_single: %d of %d peer(s) not IPC-reachable; "
+                "single-kernel mode has no MPI fallback path. Rerun with "
+                "'direct', 'buffered', 'gpumpi', or 'staged' instead.\n",
+                nFallback, P - 1);
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         CUDA_CHECK(cudaMalloc(&peer_B_dev, P * sizeof(double *)));
         CUDA_CHECK(cudaMemcpy(peer_B_dev, peer_B,
                               P * sizeof(double *), cudaMemcpyHostToDevice));
+#else
+        if (nFallback > 0) {
+            CUDA_CHECK(cudaMalloc(&fb_send, blk_elems * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&fb_recv, blk_elems * sizeof(double)));
+        }
 #endif
-        if (my_ID == 0) printf("IPC handles exchanged%s\n",
-                               SINGLE_KERNEL ? " — single-kernel mode" : "");
+        if (my_ID == 0) {
+            printf("IPC handles exchanged%s\n",
+                   SINGLE_KERNEL ? " — single-kernel mode" : "");
+            if (nFallback > 0)
+                printf("  %d of %d peers not IPC-reachable; using MPI "
+                       "send/recv fallback for them\n", nFallback, P - 1);
+        }
     } else {
         CUDA_CHECK(cudaMalloc(&B_d, col_elems * sizeof(double)));
     }
@@ -333,6 +366,8 @@ int main(int argc, char **argv)
     double *send_buf = NULL, *recv_buf = NULL;
     double **peer_recv = NULL;
     MPI_Win win_recv = MPI_WIN_NULL;
+    bool *ipc_ok_recv = NULL;
+    double *fb_recv1 = NULL;   /* MPI fallback scratch for unreachable recv_from */
 
 #if COMM_MODE == 1
     if (P > 1) {
@@ -341,10 +376,27 @@ int main(int argc, char **argv)
         MPI_Win_allocate(blk_elems * sizeof(double), 1,
                          ipc_info, MPI_COMM_WORLD, &recv_buf, &win_recv);
 
-        peer_recv = (double **)malloc(P * sizeof(double *));
+        /* same caveat as mode 0: query can fail per peer, never assume it
+           succeeded */
+        peer_recv   = (double **)calloc(P, sizeof(double *));
+        ipc_ok_recv = (bool *)calloc(P, sizeof(bool));
+        int nFallback = 0;
         for (int p = 0; p < P; p++) {
+            if (p == my_ID) continue;
             MPI_Aint sz; int disp;
-            MPI_Win_shared_query(win_recv, p, &sz, &disp, &peer_recv[p]);
+            if (MPI_Win_shared_query(win_recv, p, &sz, &disp, &peer_recv[p]) == MPI_SUCCESS
+                && peer_recv[p] != NULL) {
+                ipc_ok_recv[p] = true;
+            } else {
+                peer_recv[p] = NULL;
+                ++nFallback;
+            }
+        }
+        if (nFallback > 0) {
+            CUDA_CHECK(cudaMalloc(&fb_recv1, blk_elems * sizeof(double)));
+            if (my_ID == 0)
+                printf("  %d of %d peers not IPC-reachable; using MPI "
+                       "send/recv fallback for them\n", nFallback, P - 1);
         }
     }
 #endif
@@ -420,20 +472,48 @@ int main(int argc, char **argv)
         /* === PER-PHASE LOOP === */
         for (int phase = 1; phase < P; phase++) {
             int send_to   = (my_ID - phase + P) % P;
-#if COMM_MODE != 0
             int recv_from = (my_ID + phase)     % P;
-#endif
 
 #if COMM_MODE == 0
             CUDA_CHECK(cudaStreamSynchronize(stream));
             MPI_Barrier(MPI_COMM_WORLD);
 
-            transpose_kernel<<<tgrd, tblk, 0, stream>>>(
-                peer_B[send_to], order, colstart,
-                A_d, order, send_to * Bo,
-                Bo, ACCUMULATE);
+            {
+                /* recv_from's send_to at this same phase is my_ID (the ring
+                   pairing is symmetric per phase), so !ipc_ok_B[recv_from]
+                   means recv_from can't kernel-write into me either -- post
+                   the matching receive before anyone might send. */
+                MPI_Request reqs[2]; int nreq = 0;
+                if (!ipc_ok_B[recv_from]) {
+                    MPI_Irecv(fb_recv, blk_count, MPI_DOUBLE, recv_from, phase,
+                              MPI_COMM_WORLD, &reqs[nreq++]);
+                }
 
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+                if (ipc_ok_B[send_to]) {
+                    transpose_kernel<<<tgrd, tblk, 0, stream>>>(
+                        peer_B[send_to], order, colstart,
+                        A_d, order, send_to * Bo,
+                        Bo, ACCUMULATE);
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                } else {
+                    transpose_kernel<<<tgrd, tblk, 0, stream>>>(
+                        fb_send, Bo, 0,
+                        A_d, order, send_to * Bo,
+                        Bo, 0);
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                    MPI_Isend(fb_send, blk_count, MPI_DOUBLE, send_to, phase,
+                              MPI_COMM_WORLD, &reqs[nreq++]);
+                }
+
+                if (nreq > 0) MPI_Waitall(nreq, reqs, MPI_STATUSES_IGNORE);
+
+                if (!ipc_ok_B[recv_from]) {
+                    unpack_kernel<<<tgrd, tblk, 0, stream>>>(
+                        B_d, order, recv_from * Bo, fb_recv, Bo, ACCUMULATE);
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                }
+            }
+
             MPI_Barrier(MPI_COMM_WORLD);
 
 #elif COMM_MODE == 1
@@ -441,17 +521,34 @@ int main(int argc, char **argv)
                 send_buf, Bo, 0,
                 A_d, order, send_to * Bo,
                 Bo, 0);
-
-            cudaMemcpyAsync(
-                peer_recv[send_to], send_buf,
-                blk_elems * sizeof(double),
-                cudaMemcpyDeviceToDevice, stream);
-
             CUDA_CHECK(cudaStreamSynchronize(stream));
+
+            {
+                MPI_Request reqs[2]; int nreq = 0;
+                if (!ipc_ok_recv[recv_from]) {
+                    MPI_Irecv(fb_recv1, blk_count, MPI_DOUBLE, recv_from, phase,
+                              MPI_COMM_WORLD, &reqs[nreq++]);
+                }
+
+                if (ipc_ok_recv[send_to]) {
+                    cudaMemcpyAsync(
+                        peer_recv[send_to], send_buf,
+                        blk_elems * sizeof(double),
+                        cudaMemcpyDeviceToDevice, stream);
+                    CUDA_CHECK(cudaStreamSynchronize(stream));
+                } else {
+                    MPI_Isend(send_buf, blk_count, MPI_DOUBLE, send_to, phase,
+                              MPI_COMM_WORLD, &reqs[nreq++]);
+                }
+
+                if (nreq > 0) MPI_Waitall(nreq, reqs, MPI_STATUSES_IGNORE);
+            }
             MPI_Barrier(MPI_COMM_WORLD);
 
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
-                B_d, order, recv_from * Bo, recv_buf, Bo, ACCUMULATE);
+                B_d, order, recv_from * Bo,
+                ipc_ok_recv[recv_from] ? recv_buf : fb_recv1,
+                Bo, ACCUMULATE);
             CUDA_CHECK(cudaStreamSynchronize(stream));
             MPI_Barrier(MPI_COMM_WORLD);
 
@@ -545,8 +642,12 @@ int main(int argc, char **argv)
     if (P > 1) {
         MPI_Win_free(&win_B);
         free(peer_B);
+        free(ipc_ok_B);
 #if SINGLE_KERNEL
         CUDA_CHECK(cudaFree(peer_B_dev));
+#else
+        if (fb_send) CUDA_CHECK(cudaFree(fb_send));
+        if (fb_recv) CUDA_CHECK(cudaFree(fb_recv));
 #endif
     }
 #endif
@@ -554,6 +655,8 @@ int main(int argc, char **argv)
     if (P > 1) {
         MPI_Win_free(&win_recv);  /* also frees recv_buf */
         free(peer_recv);
+        free(ipc_ok_recv);
+        if (fb_recv1) CUDA_CHECK(cudaFree(fb_recv1));
         CUDA_CHECK(cudaFree(send_buf));
     }
 #endif

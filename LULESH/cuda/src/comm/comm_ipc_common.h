@@ -24,7 +24,9 @@
 
 // Allocate the standard recv buffers and map every IPC-reachable peer's
 // d_commDataRecv through an explicit CUDA-IPC handle exchange.  Peers on
-// other nodes get d_peerRecv[r] = NULL (MPI fallback).
+// other nodes, and same-node peers CUDA can't actually open a handle to
+// (e.g. GPU islands without full P2P), get d_peerRecv[r] = NULL (MPI
+// fallback) -- same-node is attempted, not assumed reachable.
 static inline void commIpcAllocAndMapPacked(Domain* d, Index_t comBufSize)
 {
    d->commDataRecv = new Real_t[comBufSize] ;
@@ -66,9 +68,10 @@ static inline void commIpcAllocAndMapPacked(Domain* d, Index_t comBufSize)
       else if (cudaIpcOpenMemHandle((void **)&d->d_peerRecv[r],
                                     allHandles[r],
                                     cudaIpcMemLazyEnablePeerAccess) != cudaSuccess) {
-         fprintf(stderr, "rank %d: cudaIpcOpenMemHandle for same-node "
-                         "rank %d failed\n", myRank, r) ;
-         MPI_Abort(MPI_COMM_WORLD, 1) ;
+         // same node, but CUDA couldn't open a handle to this peer (e.g. a
+         // GPU-island boundary with no P2P): fall back, don't abort
+         d->d_peerRecv[r] = NULL ;
+         ++nFallback ;
       }
    }
    if (myRank == 0 && nFallback > 0) {
