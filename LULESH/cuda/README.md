@@ -38,13 +38,28 @@ respectively), as does direct — mode B's field-readiness dependency is
 global, not per-neighbor.
 
 **Hybrid transport**: `d_peerRecv[r] == NULL` is a valid state meaning
-"rank r is not IPC-reachable" (decided by node-locality at setup, or by a
-failed `shared_query` under the interposer, which degrades per-peer
-instead of aborting). Such peers fall back to real MPI send/recv of the
-same packed messages, with receives posted into the device recv buffer —
-so mixed runs (IPC on-node, MPI between nodes) work with unchanged unpack
-logic. The fallback passes device pointers to MPI and therefore needs a
-working CUDA-aware MPI; it never triggers on single-node runs.
+"rank r is not IPC-reachable." Same-node is *attempted* via IPC, not
+assumed reachable: a `cudaIpcOpenMemHandle`/`shared_query` failure falls
+back rather than aborting, because same-node doesn't always mean
+peer-accessible — an 8-GPU NVL node here is two 4-GPU NVLink islands with
+no P2P across them (confirmed via `nvidia-smi topo -m`), a real case this
+now handles, not just the cross-node one. Unreachable peers fall back to
+real MPI send/recv of the same packed messages, with receives posted into
+the device recv buffer — so mixed runs (IPC within an island or node, MPI
+across islands or nodes) work with unchanged unpack logic. The fallback
+passes device pointers to MPI and therefore needs a working CUDA-aware
+MPI; it's dead code on hardware where every peer is reachable (e.g. a
+single NVSwitch domain), which is every environment tested so far.
+
+The same failure-checked, per-peer fallback now also exists in
+`transpose_ipc.cu` (modes 0 and 1) and `stencil_ipc.cu` — neither checked
+`MPI_Win_shared_query`'s return value before this fix, so a failure left
+the peer pointer at its zero-initialized value and a later kernel wrote
+through it unconditionally: a silent illegal-memory-access that can hang
+or fault a GPU rather than a diagnosable error. `direct_single` (all
+peers handled in one kernel launch, which can't mix transports
+mid-launch) aborts with a clear message instead if any peer is
+unreachable.
 
 ## The three send modes (IPC/mpiwrap family)
 
