@@ -22,34 +22,52 @@ set -uo pipefail
 BUILD=${BUILD:-build}
 LAUNCH=${LAUNCH:-mpirun -np}
 RANKS_LIST=${RANKS_LIST:-8 27 64}        # LULESH needs cubic rank counts
+TRANSPOSE_RANKS_LIST=${TRANSPOSE_RANKS_LIST:-$RANKS_LIST}
+STENCIL_RANKS_LIST=${STENCIL_RANKS_LIST:-8 64}
+TRANSPOSE_ITERS=${TRANSPOSE_ITERS:-100}
+TRANSPOSE_ORDER=${TRANSPOSE_ORDER:-6912} # divisible by 8, 27, and 64
 LULESH_SIZE=${LULESH_SIZE:-45}           # per-rank problem size
 MPIWRAP_LIB=$PWD/$BUILD/libmpiwrap.so
 export NVSHMEM_BOOTSTRAP=${NVSHMEM_BOOTSTRAP:-MPI}
 
 echo "launcher: '$LAUNCH', build dir: $BUILD"
+echo "transpose ranks: ${TRANSPOSE_RANKS_LIST}; stencil ranks: ${STENCIL_RANKS_LIST}; LULESH ranks: ${RANKS_LIST}"
 echo "======================================================================"
-echo "1/3 transpose (4 GPUs; direct/buffered ride the interposer windows)"
+echo "1/3 transpose; direct/buffered ride the interposer windows"
 echo "======================================================================"
-for V in staged gpumpi buffered direct direct_single; do
-    case $V in buffered|direct*) PRE="env LD_PRELOAD=$MPIWRAP_LIB" ;; *) PRE="" ;; esac
-    echo "--- transpose_$V ---"
-    $LAUNCH 4 $PRE ./$BUILD/transpose_$V 100 8192 || echo "FAILED: transpose_$V"
-done
-if [ -x ./$BUILD/transpose_nvshmem_direct ]; then
-    for V in nvshmem_direct nvshmem_buffered; do
+for N in $TRANSPOSE_RANKS_LIST; do
+    if [ $((TRANSPOSE_ORDER % N)) -ne 0 ]; then
+        echo "SKIP: transpose at $N ranks needs TRANSPOSE_ORDER divisible by $N"
+        continue
+    fi
+    echo "########## transpose, $N ranks, order $TRANSPOSE_ORDER ##########"
+    for V in staged gpumpi buffered direct direct_single; do
+        case $V in buffered|direct*) PRE="env LD_PRELOAD=$MPIWRAP_LIB" ;; *) PRE="" ;; esac
         echo "--- transpose_$V ---"
-        $LAUNCH 4 ./$BUILD/transpose_$V 100 8192 || echo "FAILED: transpose_$V"
+        $LAUNCH $N $PRE ./$BUILD/transpose_$V $TRANSPOSE_ITERS $TRANSPOSE_ORDER \
+            || echo "FAILED: transpose_$V at $N ranks"
     done
-fi
+    if [ -x ./$BUILD/transpose_nvshmem_direct ]; then
+        for V in nvshmem_direct nvshmem_buffered; do
+            echo "--- transpose_$V ---"
+            $LAUNCH $N ./$BUILD/transpose_$V $TRANSPOSE_ITERS $TRANSPOSE_ORDER \
+                || echo "FAILED: transpose_$V at $N ranks"
+        done
+    fi
+done
 
 echo "======================================================================"
-echo "2/3 stencil (4 GPUs; ipc rides the interposer windows)"
+echo "2/3 stencil; ipc rides the interposer windows"
 echo "======================================================================"
-$LAUNCH 4 env LD_PRELOAD=$MPIWRAP_LIB ./$BUILD/stencil_ipc || echo "FAILED: stencil_ipc"
-$LAUNCH 4 ./$BUILD/stencil_mpi || echo "FAILED: stencil_mpi"
-if [ -x ./$BUILD/stencil_nvshmem ]; then
-    $LAUNCH 4 ./$BUILD/stencil_nvshmem || echo "FAILED: stencil_nvshmem"
-fi
+for N in $STENCIL_RANKS_LIST; do
+    echo "########## stencil, $N ranks ##########"
+    $LAUNCH $N env LD_PRELOAD=$MPIWRAP_LIB ./$BUILD/stencil_ipc \
+        || echo "FAILED: stencil_ipc at $N ranks"
+    $LAUNCH $N ./$BUILD/stencil_mpi || echo "FAILED: stencil_mpi at $N ranks"
+    if [ -x ./$BUILD/stencil_nvshmem ]; then
+        $LAUNCH $N ./$BUILD/stencil_nvshmem || echo "FAILED: stencil_nvshmem at $N ranks"
+    fi
+done
 
 echo "======================================================================"
 echo "3/3 LULESH at ${RANKS_LIST} ranks, -s $LULESH_SIZE per rank"

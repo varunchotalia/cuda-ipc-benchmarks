@@ -90,6 +90,38 @@ bool g_commActive = false ;
 
 #include "lulesh.h"
 
+static int local_rank_for_gpu(int world_rank)
+{
+    const char* env_names[] = {
+        "OMPI_COMM_WORLD_LOCAL_RANK",
+        "SLURM_LOCALID",
+        "PMI_LOCAL_RANK",
+        "MV2_COMM_WORLD_LOCAL_RANK",
+        "MPI_LOCALRANKID"
+    };
+    for (size_t i = 0; i < sizeof(env_names) / sizeof(env_names[0]); ++i) {
+        const char* val = getenv(env_names[i]);
+        if (val && *val) {
+            char* end = NULL;
+            long parsed = strtol(val, &end, 10);
+            if (end != val && parsed >= 0) return (int)parsed;
+        }
+    }
+
+#if USE_MPI
+    MPI_Comm local_comm;
+    int local_rank = world_rank;
+    if (MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0,
+                            MPI_INFO_NULL, &local_comm) == MPI_SUCCESS) {
+        MPI_Comm_rank(local_comm, &local_rank);
+        MPI_Comm_free(&local_comm);
+    }
+    return local_rank;
+#else
+    return world_rank;
+#endif
+}
+
 /****************************************************/
 /* Allow flexibility for arithmetic representations */
 /****************************************************/
@@ -286,7 +318,7 @@ void cuda_init(int rank)
         exit(1);
     }
 
-    dev = rank % deviceCount;
+    dev = local_rank_for_gpu(rank) % deviceCount;
 
     if ((dev < 0) || (dev > deviceCount-1)) {
         fprintf(stderr, "cuda_init(): requested device (%d) out of range [%d,%d]\n",
@@ -4851,4 +4883,3 @@ int main(int argc, char *argv[])
 
   return 0 ;
 }
-

@@ -15,6 +15,34 @@
 #include <cstdlib>
 #include <cmath>
 
+static int local_rank_for_gpu(MPI_Comm comm, int world_rank)
+{
+    const char* env_names[] = {
+        "OMPI_COMM_WORLD_LOCAL_RANK",
+        "SLURM_LOCALID",
+        "PMI_LOCAL_RANK",
+        "MV2_COMM_WORLD_LOCAL_RANK",
+        "MPI_LOCALRANKID"
+    };
+    for (size_t i = 0; i < sizeof(env_names) / sizeof(env_names[0]); ++i) {
+        const char* val = getenv(env_names[i]);
+        if (val && *val) {
+            char* end = NULL;
+            long parsed = strtol(val, &end, 10);
+            if (end != val && parsed >= 0) return (int)parsed;
+        }
+    }
+
+    MPI_Comm local_comm;
+    int local_rank = world_rank;
+    if (MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL,
+                            &local_comm) == MPI_SUCCESS) {
+        MPI_Comm_rank(local_comm, &local_rank);
+        MPI_Comm_free(&local_comm);
+    }
+    return local_rank;
+}
+
 // ============================================================================
 // STENCIL KERNEL
 // ============================================================================
@@ -80,8 +108,10 @@ int main(int argc, char** argv)
 
     int num_devices;
     cudaGetDeviceCount(&num_devices);
-    cudaSetDevice(rank % num_devices);
-    printf("[Rank %d] Using GPU %d\n", rank, rank % num_devices);
+    int local_rank = local_rank_for_gpu(MPI_COMM_WORLD, rank);
+    int dev = local_rank % num_devices;
+    cudaSetDevice(dev);
+    printf("[Rank %d] Using GPU %d\n", rank, dev);
 
     // LARGE GRID
     const int N = 16384;
