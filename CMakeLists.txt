@@ -41,6 +41,16 @@ endif()
 # Driver API linked for the multi-node NVLink fabric-handle path.
 add_library(mpiwrap SHARED mpi-intercept/mpiwrap_ipc.cc)
 target_link_libraries(mpiwrap PRIVATE MPI::MPI_CXX CUDA::cudart CUDA::cuda_driver)
+
+# Quick standalone interposer sanity check: raw IPC-window copy bandwidth,
+# ping-pong latency, and atomic-exchange cost between two GPUs, through the
+# interposer -- run this before the full benchmark suite on unfamiliar
+# hardware to confirm the interposer itself works before blaming an app.
+#   LD_PRELOAD=$PWD/build/libmpiwrap.so mpirun -np 2 ./build/test_ipc_win
+add_executable(test_ipc_win mpi-intercept/test_ipc_win.cu
+                            mpi-intercept/bench_ipc.cu
+                            mpi-intercept/bench_kernels.cu)
+target_link_libraries(test_ipc_win PRIVATE MPI::MPI_CXX CUDA::cudart)
 target_include_directories(mpiwrap PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 
 # ----- transpose ------------------------------------------------------------
