@@ -2,6 +2,10 @@
 //
 // Intercepts MPI_Win_create/allocate/shared_query/free to add CUDA IPC support.
 // Use with: LD_PRELOAD=./libmpiwrap.so mpirun ...
+//
+// MPIWRAP_DISABLE_FABRIC=1 forces cross-node windows onto the per-peer
+// hybrid-MPI fallback even on fabric-capable (NVL72-class) hardware --
+// useful for an apples-to-apples fabric-vs-no-fabric comparison.
 
 #include <cstdio>
 #include <cstdlib>
@@ -67,6 +71,10 @@ static bool ranks_span_nodes(MPI_Comm comm) {
 // memory, so this path only exists for MPI_Win_allocate, where we own the
 // allocation -- not MPI_Win_create over an app cudaMalloc pointer.
 static bool fabric_supported() {
+    // Lets a benchmark force the per-peer hybrid-MPI path even on hardware
+    // that supports fabric handles, e.g. to compare against the fabric path.
+    const char* disable = getenv("MPIWRAP_DISABLE_FABRIC");
+    if (disable && disable[0] == '1') return false;
     if (cuInit(0) != CUDA_SUCCESS) return false;
     int curdev = 0;
     if (cudaGetDevice(&curdev) != cudaSuccess) return false;
