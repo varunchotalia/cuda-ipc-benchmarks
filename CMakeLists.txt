@@ -62,6 +62,8 @@ add_executable(stencil_ipc stencil/stencil_ipc.cu)
 target_link_libraries(stencil_ipc PRIVATE MPI::MPI_CXX CUDA::cudart)
 add_executable(stencil_mpi stencil/stencil_mpi.cu)
 target_link_libraries(stencil_mpi PRIVATE MPI::MPI_CXX CUDA::cudart)
+add_executable(stencil_gpumpi stencil/stencil_gpu_mpi.cu)
+target_link_libraries(stencil_gpumpi PRIVATE MPI::MPI_CXX CUDA::cudart)
 
 # ----- LULESH ---------------------------------------------------------------
 set(LULESH_DIR ${CMAKE_SOURCE_DIR}/LULESH/cuda/src)

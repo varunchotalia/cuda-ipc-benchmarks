@@ -87,6 +87,7 @@ for N in $STENCIL_RANKS_LIST; do
     $LAUNCH $N env LD_PRELOAD=$MPIWRAP_LIB ./$BUILD/stencil_ipc \
         || echo "FAILED: stencil_ipc at $N ranks"
     $LAUNCH $N ./$BUILD/stencil_mpi || echo "FAILED: stencil_mpi at $N ranks"
+    $LAUNCH $N ./$BUILD/stencil_gpumpi || echo "FAILED: stencil_gpumpi at $N ranks"
     if [ -x ./$BUILD/stencil_nvshmem ]; then
         $LAUNCH $N ./$BUILD/stencil_nvshmem || echo "FAILED: stencil_nvshmem at $N ranks"
     fi

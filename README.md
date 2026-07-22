@@ -13,7 +13,8 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │
 ├── stencil/                        # 2D 5-point stencil benchmark
 │   ├── stencil_ipc.cu                 # Ghost row exchange via CUDA IPC
-│   └── stencil_mpi.cu                 # Ghost row exchange via MPI
+│   ├── stencil_mpi.cu                  # Ghost row exchange via staged MPI (D2H/H2D)
+│   └── stencil_gpu_mpi.cu              # Ghost row exchange via GPU-aware MPI (no staging)
 │
 ├── LULESH/                         # LLNL LULESH (CUDA) with pluggable halo-exchange backends
 │   ├── cuda/src/                      # solver + comm layer (see LULESH section below)
@@ -204,9 +205,15 @@ nvcc -O3 -gencode arch=compute_90,code=sm_90 \
 MPIWRAP=~/mpiwrap/libmpiwrap.so
 LD_PRELOAD=$MPIWRAP mpirun -np 4 ./stencil_ipc
 
-# MPI version
+# Staged MPI version (D2H/H2D)
 nvcc -O3 -gencode arch=compute_90,code=sm_90 \
     -I${MPI_HOME}/include stencil_mpi.cu \
     -o stencil_mpi -L${MPI_HOME}/lib -lmpi
 mpirun -np 4 ./stencil_mpi
+
+# GPU-aware MPI version (device pointers straight to MPI_Sendrecv, no staging)
+nvcc -O3 -gencode arch=compute_90,code=sm_90 \
+    -I${MPI_HOME}/include stencil_gpu_mpi.cu \
+    -o stencil_gpumpi -L${MPI_HOME}/lib -lmpi
+mpirun -np 4 ./stencil_gpumpi
 ```
