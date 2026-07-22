@@ -8,6 +8,10 @@
 #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100 && cmake --build build -j
 #   NVSHMEM_HOME=/path/to/nvshmem bash scripts/run_nvl72.sh
 #
+# Optional first step, before this full suite: a fast interposer-only
+# sanity check (raw IPC-window bandwidth/latency, no application code)
+#   LD_PRELOAD=$PWD/build/libmpiwrap.so mpirun -np 2 ./build/test_ipc_win
+#
 # What to look for:
 #  - interposer log line "fabric window: N ranks ..." confirms the CUDA
 #    fabric-handle path (multi-node NVLink) is active; "N of M peers not
