@@ -61,12 +61,23 @@ echo ""
 echo "==================================================================="
 echo "LULESH verification: 8 ranks / 8x H200, -s $SIZE, full run"
 echo "==================================================================="
+
+# Reference energy = the most common non-empty value across variants, not
+# hardcoded to staged -- so if staged (or any single variant) crashes, the
+# remaining variants are still checked against each other instead of all
+# being mislabeled MISMATCH against an empty baseline.
+REFERENCE=$(for V in $VARIANTS; do echo "${ENERGY[$V]}"; done \
+            | grep -v '^$' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+
 printf "%-12s %-16s %-12s %-12s %s\n" "variant" "energy" "elapsed(s)" "FOM(z/s)" "check"
 PASS=1
 for V in $VARIANTS; do
     CHECK="MATCH"
-    if [ -z "${ENERGY[$V]}" ]; then CHECK="MISSING"; PASS=0;
-    elif [ "${ENERGY[$V]}" != "${ENERGY[staged]}" ]; then
+    if [ -z "${ENERGY[$V]}" ]; then
+        CHECK="FAILED (no energy reported)"; PASS=0
+    elif [ -z "$REFERENCE" ]; then
+        CHECK="UNKNOWN (no variant produced energy)"; PASS=0
+    elif [ "${ENERGY[$V]}" != "$REFERENCE" ]; then
         CHECK="MISMATCH"; PASS=0
         # direct's atomicAdd changes summation order; tiny deviation possible
         [ "$V" == "direct" ] && CHECK="MISMATCH(atomics?)"
@@ -74,4 +85,5 @@ for V in $VARIANTS; do
     printf "%-12s %-16s %-12s %-12s %s\n" "$V" "${ENERGY[$V]}" "${ELAPSED[$V]}" "${FOM[$V]}" "$CHECK"
 done
 echo "==================================================================="
+echo "Reference energy (consensus across variants): ${REFERENCE:-none}"
 [ $PASS -eq 1 ] && echo "ALL VARIANTS: PASS" || echo "CHECK OUTPUT ABOVE"
