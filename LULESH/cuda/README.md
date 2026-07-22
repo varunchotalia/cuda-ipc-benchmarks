@@ -61,6 +61,19 @@ peers handled in one kernel launch, which can't mix transports
 mid-launch) aborts with a clear message instead if any peer is
 unreachable.
 
+Known limitation shared by all of these: the fallback decision assumes
+IPC reachability is *symmetric* per GPU pair (if my query for you
+succeeds, I assume your query for me also succeeds, and skip exchanging
+an explicit reachability mask). True for real P2P link failures — islands,
+missing fabric handles — but not guaranteed for other failure causes
+(e.g. resource exhaustion on only one side), where an asymmetric failure
+could deadlock instead of falling back cleanly. A fully robust version
+would allgather each rank's per-peer success bitmap and have both sides
+agree before choosing IPC vs. MPI for a pair. The MPI fallback also
+passes device pointers to `MPI_Isend`/`Irecv`/`Send`/`Recv`, so it
+requires a working CUDA-aware MPI; it is dead code (never exercised) on
+any hardware tested so far, since every peer has been reachable.
+
 ## The three send modes (IPC/mpiwrap family)
 
 | Mode | Binaries | Build flags | What happens per message |

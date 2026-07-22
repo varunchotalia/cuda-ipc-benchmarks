@@ -54,6 +54,29 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 
 Set `-DACCUMULATE=0` for `B = A^T` (overwrite) or `-DACCUMULATE=1` (default) for `B += A^T` (PRK-style, A incremented each iteration).
 
+**Per-peer IPC fallback** (`IPC direct` and `IPC buffered`): every
+`MPI_Win_shared_query` is checked, and a peer that fails it (cross-node
+without fabric handles, or a same-node GPU-island boundary with no P2P)
+falls back to a real `MPI_Isend`/`Irecv` of the same tile instead of
+writing through a stale/NULL pointer. `IPC direct (single-kernel)` can't
+mix transports inside one kernel launch, so it aborts with a clear
+message if any peer is unreachable, instead.
+
+Known limitation: the fallback decision assumes IPC reachability is
+*symmetric* per GPU pair — if rank A's query for rank B succeeds, A
+assumes B's query for A also succeeds, and skips exchanging an explicit
+reachability mask. This holds for real P2P link failures (islands,
+missing fabric handles), but not necessarily for other causes of a
+`shared_query` failure (e.g. transient resource exhaustion on one side
+only) — an asymmetric failure there could deadlock. A fully robust
+version would allgather each rank's per-peer success bitmap and have
+both sides agree before choosing IPC vs. MPI for that pair.
+
+The MPI fallback passes **device pointers** to `MPI_Isend`/`Irecv`, so it
+requires a working CUDA-aware MPI; this is already true throughout the
+IPC/mpiwrap family (see LULESH below) and is never exercised on
+single-node runs where every peer is reachable.
+
 ## LULESH
 
 `LULESH/cuda` is LLNL's CUDA LULESH with the halo exchange refactored into
