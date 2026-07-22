@@ -41,6 +41,17 @@ transpose_staged
 ipc_*_noaccum
 nvshmem_direct
 nvshmem_buffered
+nvshmem_direct_single*
+nvshmem_direct_noaccum
+nvshmem_buffered_noaccum
+stencil_nvshmem
+test_shm_win
+/transpose/direct*
+/transpose/buffered*
+/transpose/gpumpi*
+/transpose/staged*
 *.nsys-rep
 *.sqlite
 build_cmake_test/
+.verify_bin/
+build_*.log

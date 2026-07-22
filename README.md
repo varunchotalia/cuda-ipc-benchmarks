@@ -37,9 +37,11 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │   ├── transpose_results.md
 │   └── stencil_results.txt
 │
-├── run_transpose_all.sbatch        # Builds and runs all IPC/MPI transpose variants
-├── run_nvshmem_all.sbatch          # Builds and runs all NVSHMEM transpose variants
-└── libmpiwrap.so                   # Pre-built MPI interposer (see Build below)
+├── scripts/
+│   ├── run_transpose_all.sbatch       # Builds and runs all IPC/MPI transpose variants
+│   ├── run_nvshmem_all.sbatch         # Builds and runs all NVSHMEM transpose variants
+│   └── run_nvl72.sh                   # Multi-node NVLink suite (see Build & Run below)
+└── CMakeLists.txt                  # One-command build for everything (see Build & Run below)
 ```
 
 ## Transpose Communication Modes
@@ -62,20 +64,11 @@ writing through a stale/NULL pointer. `IPC direct (single-kernel)` can't
 mix transports inside one kernel launch, so it aborts with a clear
 message if any peer is unreachable, instead.
 
-Known limitation: the fallback decision assumes IPC reachability is
-*symmetric* per GPU pair — if rank A's query for rank B succeeds, A
-assumes B's query for A also succeeds, and skips exchanging an explicit
-reachability mask. This holds for real P2P link failures (islands,
-missing fabric handles), but not necessarily for other causes of a
-`shared_query` failure (e.g. transient resource exhaustion on one side
-only) — an asymmetric failure there could deadlock. A fully robust
-version would allgather each rank's per-peer success bitmap and have
-both sides agree before choosing IPC vs. MPI for that pair.
-
-The MPI fallback passes **device pointers** to `MPI_Isend`/`Irecv`, so it
-requires a working CUDA-aware MPI; this is already true throughout the
-IPC/mpiwrap family (see LULESH below) and is never exercised on
-single-node runs where every peer is reachable.
+Known limitation: the fallback assumes IPC reachability is *symmetric*
+per GPU pair, and (like the rest of the IPC/mpiwrap family) it requires
+a working CUDA-aware MPI to actually send the fallback messages — see
+[LULESH/cuda/README.md](LULESH/cuda/README.md#the-six-variants) for the
+full explanation.
 
 ## LULESH
 
@@ -144,7 +137,7 @@ The Makefile instructions below remain valid for per-benchmark builds.
 
 ### Build the MPI interposer library
 
-The IPC modes (`COMM_MODE=0,1`) require `libmpiwrap.so` at runtime for the `MPI_Win_create`/`MPI_Win_shared_query` intercept. A pre-built copy is in the repo root. To rebuild:
+The IPC modes (`COMM_MODE=0,1`) require `libmpiwrap.so` at runtime for the `MPI_Win_create`/`MPI_Win_shared_query` intercept. It's not committed (it links local CUDA/MPI install paths, so a shipped binary wouldn't be portable) — build it once:
 
 ```bash
 CUDA_HOME=$(dirname $(dirname $(which nvcc)))
@@ -177,7 +170,7 @@ mpirun -np 4 ./gpumpi 100 4096
 mpirun -np 4 ./staged 100 4096
 
 # Or submit everything via sbatch (handles LD_PRELOAD automatically)
-sbatch ~/mpiwrap/run_transpose_all.sbatch
+sbatch ~/mpiwrap/scripts/run_transpose_all.sbatch
 ```
 
 ### Transpose (NVSHMEM modes)
@@ -194,7 +187,7 @@ mpirun -np 4 ./nvshmem_direct_single 100 4096
 mpirun -np 4 ./nvshmem_buffered 100 4096
 
 # Or via sbatch
-sbatch ~/mpiwrap/run_nvshmem_all.sbatch
+sbatch ~/mpiwrap/scripts/run_nvshmem_all.sbatch
 ```
 
 ### Stencil
