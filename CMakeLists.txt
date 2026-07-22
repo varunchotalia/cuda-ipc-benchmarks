@@ -47,6 +47,11 @@ target_link_libraries(mpiwrap PRIVATE MPI::MPI_CXX CUDA::cudart CUDA::cuda_drive
 # interposer -- run this before the full benchmark suite on unfamiliar
 # hardware to confirm the interposer itself works before blaming an app.
 #   LD_PRELOAD=$PWD/build/libmpiwrap.so mpirun -np 2 ./build/test_ipc_win
+# NOTE: this uses MPI_Win_create over an app cudaMalloc pointer, which the
+# interposer always backs with same-node CUDA IPC -- it does NOT exercise
+# the cross-node fabric-handle path (that's only reachable through
+# MPI_Win_allocate on a communicator spanning nodes, i.e. lulesh_mpiwrap /
+# lulesh_mpiwrap_rp). It proves the interposer works, not that fabric does.
 add_executable(test_ipc_win mpi-intercept/test_ipc_win.cu
                             mpi-intercept/bench_ipc.cu
                             mpi-intercept/bench_kernels.cu)

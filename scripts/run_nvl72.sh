@@ -8,18 +8,32 @@
 #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100 && cmake --build build -j
 #   NVSHMEM_HOME=/path/to/nvshmem bash scripts/run_nvl72.sh
 #
-# Optional first step, before this full suite: a fast interposer-only
-# sanity check (raw IPC-window bandwidth/latency, no application code)
+# Optional first step, before this full suite: a fast INTERPOSER sanity
+# check (raw IPC-window bandwidth/latency, no application code):
 #   LD_PRELOAD=$PWD/build/libmpiwrap.so mpirun -np 2 ./build/test_ipc_win
+#   (Slurm sites that discourage bare mpirun: swap in
+#    "srun --mpi=pmix -n 2" for "mpirun -np 2" above)
+# NOTE: this only proves the interposer + same-node CUDA IPC work. It uses
+# MPI_Win_create over an app pointer, which never takes the fabric-handle
+# branch (only MPI_Win_allocate on a cross-node communicator does, i.e.
+# lulesh_mpiwrap/lulesh_mpiwrap_rp below) -- it is NOT a fabric proof.
 #
 # What to look for:
-#  - interposer log line "fabric window: N ranks ..." confirms the CUDA
-#    fabric-handle path (multi-node NVLink) is active; "N of M peers not
-#    IPC-reachable" means it fell back to per-peer hybrid MPI instead
+#  - interposer log line "fabric window: N ranks ..." during
+#    lulesh_mpiwrap/lulesh_mpiwrap_rp is the actual proof the cross-node
+#    CUDA fabric-handle path (multi-node NVLink) is active; "N of M peers
+#    not IPC-reachable" means it fell back to per-peer hybrid MPI instead
 #  - LULESH: Final Origin Energy must match staged at every rank count
 #  - section 4/4 repeats LULESH mpiwrap/mpiwrap_rp with the fabric path
 #    forced off (MPIWRAP_DISABLE_FABRIC=1), for a fabric-vs-hybrid-MPI
 #    apples-to-apples comparison at the same rank counts
+#
+# Rank counts need one MPI rank per GPU, and the job allocation must
+# actually cover them: LULESH and transpose default to 8/27/64 ranks
+# (LULESH needs cubic counts), stencil to 8/64 -- i.e. request at least
+# 64 GPUs (however many NVL72 trays that spans) for the defaults to run
+# to completion; override via RANKS_LIST / TRANSPOSE_RANKS_LIST /
+# STENCIL_RANKS_LIST if your allocation is smaller.
 #
 # Requirements on the target system: CUDA >= 12.4 driver stack with the
 # IMEX daemon running (for fabric handles), CUDA-aware MPI (for the ipc/
