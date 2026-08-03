@@ -209,11 +209,17 @@ Caveats:
   ways and `gpumpi_default_45_200` (UCX defaults, 3.84 s) vs
   `gpumpi_ucx_tls_only_45_200` (pinned, 3.79 s) differ by 1.3%. Consistent
   with the penalty being large-message-specific — transpose stages ~512 MiB
-  per exchange, LULESH's halo planes at size 45 are tens of KB. So these
-  numbers are **not known to be wrong**; re-measuring under defaults is worth
-  doing for provenance consistency, not because the values are suspect.
-  Verification results are unaffected regardless: transport selection cannot
-  change numerics, and energy matched across every 46508 configuration.
+  per exchange, whereas a LULESH face at `-s 45` is 45² × 8 B per field, i.e.
+  47.5 KiB for the 3-field MonoQ exchange and 94.9 KiB for the 6-field
+  x/y/z/xd/yd/zd exchange (`lulesh-comms.cu:1243,1665`). So these numbers are
+  **not known to be wrong**; re-measuring under defaults is worth doing for
+  provenance consistency, not because the values are suspect. Verification is
+  also not expected to be affected: a correct transport implementation should
+  preserve numerics, and every configuration tested in job 46508 produced
+  matching energy. Note this is an empirical claim, not a guarantee — the
+  `direct` backend's `atomicAdd` force summation can legitimately reorder
+  accumulation and perturb the last digits (see the SBN note above); it simply
+  stayed below the log's `%12.6e` printed precision in these runs.
 - One staged run aborted with a Volume Error on freshly rebooted
   h200x8-03 and passed on rerun — treat isolated failures there with
   suspicion.
@@ -369,7 +375,7 @@ MPIWRAP=~/mpiwrap/mpi-intercept/libmpiwrap.so
 mpirun -np 8 ./lulesh_staged -s 45
 LD_PRELOAD=$MPIWRAP mpirun -np 8 ./lulesh_mpiwrap -s 45
 
-# or the harnesses (build + run + energy cross-check, UCX pinned):
+# or the harnesses (build + run + energy cross-check, UCX defaults):
 sbatch LULESH/run_lulesh_verify.sbatch   # correctness, full-length run
 sbatch LULESH/run_lulesh.sbatch          # size sweep benchmark
 ```
