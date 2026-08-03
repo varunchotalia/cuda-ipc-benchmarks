@@ -1,14 +1,19 @@
-// stencil_gpu_mpi.cu
+// stencil_gpu_mpi_profile.cu
 //
-// Multi-GPU stencil with GPU-aware (CUDA-aware) MPI ghost exchange
-// Supports 1 to 16 GPUs (any count)
+// Diagnostic variant of stencil_gpu_mpi.cu: identical GPU-aware MPI ghost
+// exchange (device pointers straight into MPI_Sendrecv, no D2H/H2D staging),
+// but with explicit phase timing around pack / MPI / unpack / compute so the
+// fixed-per-call-overhead hypothesis for GPU-aware MPI can be tested directly
+// instead of inferred from wall-clock totals alone.
 //
-// Same computation as stencil_mpi.cu, but ghost data travels straight
-// GPU -> GPU: device pointers are passed directly to MPI_Sendrecv, no
-// D2H/H2D staging. Requires a CUDA-aware MPI build.
+// This adds two cudaDeviceSynchronize() barriers per iteration (after unpack,
+// after compute) that stencil_gpu_mpi.cu does not have -- those barriers are
+// needed to attribute wall-clock time to a phase. Total time here is expected
+// to run a bit higher than the unsynchronized production loop; the per-phase
+// averages, not the total, are the point of this variant.
 //
-// Compile: nvcc -o stencil_gpu_mpi stencil_gpu_mpi.cu -lmpi
-// Run:     mpirun -np 4 ./stencil_gpu_mpi
+// Compile: nvcc -o stencil_gpu_mpi_profile stencil_gpu_mpi_profile.cu -lmpi
+// Run:     mpirun -np 4 ./stencil_gpu_mpi_profile
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -128,7 +133,7 @@ int main(int argc, char** argv)
         printf("Global grid: %d x %d = %.2f million cells\n",
                N, TOTAL_W, (double)N * TOTAL_W / 1e6);
         printf("Per GPU: %d x %d + 2 ghost columns\n", N, W);
-        printf("Using GPU-aware MPI Send/Recv (device pointers, no staging)\n");
+        printf("Using GPU-aware MPI Send/Recv (device pointers, no staging) -- PHASE-PROFILED\n");
     }
 
     // Allocate grids
@@ -180,67 +185,50 @@ int main(int argc, char** argv)
     double weight = 0.25;
     int iterations = 100;
 
-    // Untimed warmup iterations (STENCIL_WARMUP, default 0). UCX establishes
-    // CUDA-aware connections lazily on the first message, so with no warmup
-    // that one-time setup cost lands inside the timed region. Default 0 keeps
-    // the original timing behavior; see results/stencil_results.txt.
-    int warmup = 0;
-    {
-        const char* w = getenv("STENCIL_WARMUP");
-        if (w && *w) {
-            char* end = NULL;
-            long v = strtol(w, &end, 10);
-            if (end != w && v > 0) warmup = (int)v;
-        }
-    }
-    if (rank == 0) printf("Warmup iterations (untimed): %d\n", warmup);
-
     MPI_Barrier(MPI_COMM_WORLD);
+
+    double sum_pack = 0.0, sum_mpi = 0.0, sum_unpack = 0.0, sum_compute = 0.0;
 
     cudaEvent_t ev_start, ev_stop;
     cudaEventCreate(&ev_start);
     cudaEventCreate(&ev_stop);
+    cudaEventRecord(ev_start);
 
-    for (int iter = 0; iter < warmup + iterations; iter++) {
-
-        // Start the clock only once the warmup iterations are done.
-        if (iter == warmup) {
-            cudaDeviceSynchronize();
-            MPI_Barrier(MPI_COMM_WORLD);
-            cudaEventRecord(ev_start);
-        }
+    for (int iter = 0; iter < iterations; iter++) {
 
         // === PACK EDGES ===
-
-        // Pack left edge (col 1)
+        double t0 = MPI_Wtime();
         if (left_rank >= 0) {
             pack_edge<<<copy_blocks, copy_threads>>>(
                 d_old, d_send_buf_L, N, pitch, 1
             );
         }
-        // Pack right edge (col W)
         if (right_rank >= 0) {
             pack_edge<<<copy_blocks, copy_threads>>>(
                 d_old, d_send_buf_R, N, pitch, W
             );
         }
         cudaDeviceSynchronize();
+        double t1 = MPI_Wtime();
+        sum_pack += (t1 - t0);
 
         // === GPU-AWARE MPI EXCHANGE (device pointers, no host staging) ===
-        // Send left edge to left neighbor, receive from left neighbor
+        double t2 = MPI_Wtime();
         if (left_rank >= 0) {
             MPI_Sendrecv(d_send_buf_L, N, MPI_DOUBLE, left_rank, 0,
                          d_recv_buf_L, N, MPI_DOUBLE, left_rank, 1,
                          MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         }
-        // Send right edge to right neighbor, receive from right neighbor
         if (right_rank >= 0) {
             MPI_Sendrecv(d_send_buf_R, N, MPI_DOUBLE, right_rank, 1,
                          d_recv_buf_R, N, MPI_DOUBLE, right_rank, 0,
                          MPI_COMM_WORLD, MPI_STATUS_IGNORE);
         }
+        double t3 = MPI_Wtime();
+        sum_mpi += (t3 - t2);
 
         // === UNPACK INTO GRID ===
+        double t4 = MPI_Wtime();
         if (left_rank >= 0) {
             unpack_ghost<<<copy_blocks, copy_threads>>>(
                 d_recv_buf_L, d_old, N, pitch, 0
@@ -251,11 +239,18 @@ int main(int argc, char** argv)
                 d_recv_buf_R, d_old, N, pitch, W + 1
             );
         }
+        cudaDeviceSynchronize();
+        double t5 = MPI_Wtime();
+        sum_unpack += (t5 - t4);
 
         // === COMPUTE STENCIL ===
+        double t6 = MPI_Wtime();
         stencil_kernel<<<stencil_blocks, stencil_threads>>>(
             d_old, d_new, N, W, weight
         );
+        cudaDeviceSynchronize();
+        double t7 = MPI_Wtime();
+        sum_compute += (t7 - t6);
 
         // Swap
         double* tmp = d_old;
@@ -269,22 +264,38 @@ int main(int argc, char** argv)
     float ms;
     cudaEventElapsedTime(&ms, ev_start, ev_stop);
 
-    // Use slowest GPU time
+    // Use slowest GPU time (and slowest per-phase time) for cross-rank reporting
     float max_ms;
     MPI_Reduce(&ms, &max_ms, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
 
+    double phase_ms[4] = {
+        sum_pack * 1000.0 / iterations,
+        sum_mpi * 1000.0 / iterations,
+        sum_unpack * 1000.0 / iterations,
+        sum_compute * 1000.0 / iterations
+    };
+    double phase_max[4];
+    MPI_Reduce(phase_ms, phase_max, 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
     if (rank == 0) {
-        printf("\n=== Results (GPU-aware MPI Send/Recv, %d GPUs) ===\n", size);
+        printf("\n=== Results (GPU-aware MPI Send/Recv, %d GPUs, PHASE-PROFILED) ===\n", size);
         printf("Grid: %d x %d = %.0f million cells\n",
                N, TOTAL_W, (double)N * TOTAL_W / 1e6);
         printf("Per GPU: %d x %d\n", N, W);
         printf("Iterations: %d\n", iterations);
-        printf("Total time: %.2f ms (slowest GPU)\n", max_ms);
+        printf("Total time: %.2f ms (slowest GPU, includes extra profiling syncs)\n", max_ms);
         printf("Per iteration: %.3f ms\n", max_ms / iterations);
 
         double cells_per_iter = (double)N * TOTAL_W;
         double cells_per_sec = cells_per_iter * iterations / (max_ms / 1000.0);
         printf("Throughput: %.2f billion cells/sec\n", cells_per_sec / 1e9);
+
+        printf("\n--- Phase breakdown (ms/iter, slowest rank) ---\n");
+        printf("PHASE_PACK    %.4f\n", phase_max[0]);
+        printf("PHASE_MPI     %.4f\n", phase_max[1]);
+        printf("PHASE_UNPACK  %.4f\n", phase_max[2]);
+        printf("PHASE_COMPUTE %.4f\n", phase_max[3]);
+        printf("PHASE_SUM     %.4f\n", phase_max[0] + phase_max[1] + phase_max[2] + phase_max[3]);
     }
 
     // ------------------------------------------------------------------------

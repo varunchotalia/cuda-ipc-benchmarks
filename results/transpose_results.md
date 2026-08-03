@@ -1,5 +1,12 @@
 # Transpose Benchmark — H200 GPUs, 100 iterations
 
+> **READ FIRST (added 2026-08-01, jobs 59067 + 59070).** The tables below
+> (measured 2026-05-05 under UCX *default* transport selection) appear to be
+> CORRECT. Do not "fix" them. Two later-discovered effects can make them look
+> wrong if you re-measure with `UCX_TLS` pinned — see
+> "Appendix: UCX_TLS pinning" at the end of this file. Short version:
+> **do not export `UCX_TLS`; use UCX defaults.**
+
 ## 4 GPUs — With Accumulation (B += A^T)
 
 ### IPC / MPI — All Modes
@@ -118,3 +125,93 @@ Matrix Size | Mode           | GB/s
 16384²      | IPC (buffered) | 772.4
 16384²      | GPU-aware MPI  | 742.0
 16384²      | Staged MPI     | 104.3
+
+---
+
+## Appendix: `UCX_TLS` pinning is harmful — use UCX defaults
+(jobs 59067, 59070; h200x4; 2026-07-31 / 2026-08-01)
+
+Re-measuring the 4-GPU tables above with `UCX_TLS=self,sm,cuda_copy,cuda_ipc`
+exported (a pinning introduced later, for LULESH) produced two large
+discrepancies. Both trace to that one environment variable. The
+`COMM_MODE==3` staged code path is unchanged since commit 9b9e6eb (verified
+by diff), and build flags match `transpose/Makefile`.
+
+### Symptom 1 — staged MPI is ~2.6x slower when UCX_TLS is set
+
+16384², B+=A^T, staged MPI, varying ONLY `UCX_TLS`:
+
+| UCX_TLS                          | GB/s  |
+|----------------------------------|-------|
+| *unset* (default selection)      | 96.0  |
+| self,sm,cuda_copy,cuda_ipc       | 37.3  |
+| self,sm  (host only, no CUDA)    | 37.3  |
+| self,sm,cuda_ipc (no cuda_copy)  | 37.6  |
+
+Note `self,sm` — no CUDA transports at all — is *also* 37.3. So this is NOT
+`cuda_copy` mis-classifying pinned host memory (my initial hypothesis, now
+refuted). ANY explicit restriction costs ~2.6x. UCX's default selection
+evidently includes a transport the aliases above omit that matters for very
+large host messages. The transpose staged path sends ~512 MiB per exchange
+(Bo × order × 8 = 4096 × 16384 × 8 at 16384²/4 ranks), which is why this is
+severe here. The stencil's staged halo is only ~128 KiB per exchange, and its
+staged numbers do NOT show a comparable penalty — so this effect is
+large-message-specific.
+
+Buffered/direct IPC and GPU-aware MPI are UNAFFECTED by UCX_TLS
+(~1,062,000 / ~1,073,000 MB/s in every setting).
+
+`UCX_TLS=self,sm,cuda_ipc` (cuda_ipc without cuda_copy) additionally emits
+"no copy across memory types transport ... Destination is unreachable" errors
+for all modes — cuda_copy is required for any CUDA staging. Do not use it.
+
+### Symptom 2 — one warmup iteration is NOT enough for GPU-aware MPI (when pinned)
+
+GPU-aware MPI (COMM_MODE=2), MB/s, warmup run in DESCENDING order so that
+warmup=1 is not confounded with being first-in-job:
+
+| warmup | 4096²    | 16384²    |
+|--------|----------|-----------|
+| 50     | 820,940  | 1,073,179 |
+| 20     | 819,664  | 1,073,289 |
+| 5      | 818,428  | 1,073,371 |
+| 1      | 117,616  |   714,738 |
+| 1 (repeated LAST) | 132,671 | 716,773 |
+| 50 (repeated last)| 821,292 | — |
+
+warmup=1 is slow BOTH times, including when it runs last, so this is genuine
+warmup insufficiency, not a first-run artifact. Controls are flat to ~4
+significant figures across all warmup values: ipc_direct ~696,000 (4096²) /
+~865,500 (16384²), ipc_buffered ~1,062,000, staged ~37,300. Only GPU-aware
+moves. Matches the stencil result (job 57012/58445): under pinned UCX_TLS,
+GPU-aware MPI needs >=5 untimed iterations; the built-in PRK single warmup
+(transpose_ipc.cu, `iter == warmup`, default 1) is insufficient.
+
+### Why the 2026-05-05 tables are believed correct
+
+Those runs predate the UCX_TLS pinning, i.e. they used defaults. Under
+defaults with warmup=20, this job measured GPU-aware MPI at 16384² =
+1,077,634 MB/s vs the recorded **1077.1 GB/s** — a near-exact match. Staged
+under defaults is 96.0 GB/s vs recorded 114.8, still 1.20x apart and NOT
+fully explained (candidates: node-to-node variation, or another environment
+difference not yet identified).
+
+### Actions
+
+1. **Do not export `UCX_TLS`.** It was introduced to work around LULESH's
+   "broken gpumpi", which is now known to be a one-time setup cost and not a
+   transport fault at all (see `LULESH/cuda/README.md` appendix). The pinning
+   is therefore both unnecessary and actively harmful.
+2. `TRANSPOSE_WARMUP` (env, default 1 = original behavior) was added to
+   `transpose/transpose_ipc.cu` on 2026-07-30 so warmup can be raised. Use
+   >=5 for any GPU-aware measurement.
+3. ~~Not yet measured: GPU-aware MPI at warmup=1 under UCX *defaults*.~~
+   **RESOLVED (job 59853, 2026-08-03).** Under UCX defaults, GPU-aware MPI is
+   already converged at warmup=1 — 16384²: 1,073,277 (wu=1) / 1,074,014 (wu=2)
+   / 1,073,900 (wu=5) / 1,074,167 (wu=20) MB/s. So the warmup sensitivity in
+   Symptom 2 is *entirely* an artifact of the `UCX_TLS` pinning, and the
+   built-in single PRK warmup was never inadequate under the configuration the
+   2026-05-05 tables were taken in. Those tables stand.
+4. `LULESH/run_lulesh.sbatch` and `run_lulesh_verify.sbatch` still export
+   `UCX_TLS`; the LULESH README's claim that pinning protects host-staged MPI
+   is contradicted by Symptom 1 and should be revisited.

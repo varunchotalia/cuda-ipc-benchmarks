@@ -1,0 +1,25 @@
+Host h200x8-01 using GPU 0: NVIDIA H200 NVL
+Host h200x8-01 using GPU 4: NVIDIA H200 NVL
+Host h200x8-01 using GPU 1: NVIDIA H200 NVL
+Host h200x8-01 using GPU 2: NVIDIA H200 NVL
+Host h200x8-01 using GPU 7: NVIDIA H200 NVL
+Host h200x8-01 using GPU 5: NVIDIA H200 NVL
+Host h200x8-01 using GPU 6: NVIDIA H200 NVL
+Host h200x8-01 using GPU 3: NVIDIA H200 NVL
+Running until t=0.010000, Problem size=45x45x45
+   Used Memory         =  614.2500 Mb
+Run completed:  
+   Problem size        =  45 
+   MPI tasks           =  8 
+   Iteration count     =  3146 
+   Final Origin Energy = 1.482403e+06 
+   Testing Plane 0 of Energy Array on rank 0:
+        MaxAbsDiff   = 4.614552e+00
+        TotalAbsDiff = 5.147618e+01
+        MaxRelDiff   = 9.659635e-03
+
+
+Elapsed time         =       2.45 (s)
+Grind time (us/z/c)  = 0.0085587713 (per dom)  (0.0010698464 overall)
+FOM                  =  934713.61 (z/s)
+

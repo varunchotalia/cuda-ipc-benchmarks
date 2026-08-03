@@ -33,8 +33,339 @@ Grid Size  | Mode    | Time (ms) | Throughput (Gcells/s)
 32768²     | IPC     | 155.30    | 691.41
 32768²     | MPI     | 167.08    | 642.64
 
+NOTE (2026-07-24, job 51561; hedged 2026-07-28): the 16384² IPC/MPI numbers
+above run ~18-22% slower than the same configuration measured later (below).
+Job 51561's numbers reproduce job 49820's independent earlier run to within
+0.5%, so the later numbers are self-consistent and the gap is not run-to-run
+cluster noise. The *cause* of the gap is NOT established. A likely contributor
+is build flags: the script that produced this table compiled without `-O3` and
+without `-gencode arch=compute_90,code=sm_90`, while the later sweeps add both.
+But that attribution cannot be verified -- the script was retired in commit
+d7fd496 and is not in HEAD -- and the benchmark sources themselves changed
+between the two runs (782d78b / 5fce046 changed GPU binding to node-local
+rank), which is an uncontrolled confound. Establishing the cause would need
+one job that compiles both ways on the same node. Treat the reconciled sweep
+below as authoritative for 4-GPU 16384²; this table's other sizes and GPU
+counts were not re-measured and may carry the same gap.
+
 ## 8 GPUs (16384² only)
 Grid Size  | Mode | Time (ms) | Throughput (Gcells/s)
 -----------|------|-----------|---------------------
 16384²     | IPC  |  34.09    | 787.47
 16384²     | MPI  |  45.94    | 584.33
+
+## GPU-aware (CUDA-aware) MPI, 4 GPUs, 16384² — job 49820 (h200x4, 2026-07-22)
+First stencil run against true CUDA-aware MPI: device pointers passed straight
+into MPI_Sendrecv (stencil/stencil_gpu_mpi.cu), no D2H/H2D staging. UCX pinned
+to `UCX_TLS=self,sm,cuda_copy,cuda_ipc` per the LULESH gpumpi workaround. All
+three modes below ran back-to-back in the same job for a fair comparison
+(numbers differ slightly from the MPI/IPC rows above, which are from earlier
+runs at different queue/node conditions).
+
+Mode              | Time (ms) | Throughput (Gcells/s)
+------------------|-----------|---------------------
+GPU-aware MPI     | 309.64    |  86.69
+Staged MPI (host) |  51.09    | 525.42
+IPC               |  39.56    | 678.50
+
+Correctness: global L2 norm identical across all three (5.6348479009) — the
+GPU-aware path is numerically correct.
+
+Unlike LULESH's gpumpi, this run did not hit the `cuCtxGetApiVersion:
+invalid device context` UCX error (UCX_LOG_LEVEL=error showed nothing).
+
+*** SUPERSEDED -- see "Root cause" below. The 6x/7.8x ratios here are real
+*** measurements but they are NOT a transport-speed comparison: essentially
+*** all of the GPU-aware time is one-time connection setup charged to the
+*** timed loop, because this benchmark has no warmup iteration. Do not cite
+*** these ratios as evidence about CUDA-aware MPI.
+
+## Reconciliation: full grid sweep + phase breakdown + UCX transport, 4 GPUs
+job 51561 (h200x4-01, 2026-07-24). All three modes (IPC, staged MPI,
+GPU-aware MPI) built with -O3 -gencode arch=compute_90,code=sm_90 and run
+back-to-back in one job across the full grid range, to settle both the
+table mismatch above and the open question of whether GPU-aware MPI's
+poor stencil showing is message-size-dependent (as it is for transpose)
+or just broken outright.
+
+Grid Size  | IPC (ms) | Staged (ms) | GPU-aware (ms) | IPC (Gcell/s) | Staged (Gcell/s) | GPU-aware (Gcell/s)
+-----------|----------|-------------|----------------|---------------|------------------|--------------------
+1024²      |   3.81   |    6.57     |    287.29      |    27.51      |      15.97       |        0.36
+2048²      |   3.82   |    7.80     |    278.13      |   109.91      |      53.76       |        1.51
+4096²      |   6.02   |   11.04     |    284.91      |   278.68      |     151.94       |        5.89
+8192²      |  12.95   |   20.17     |    282.83      |   518.25      |     332.76       |       23.73
+16384²     |  39.41   |   51.20     |    314.83      |   681.15      |     524.33       |       85.26
+32768²     | 144.52   |  164.75     |    417.82      |   742.98      |     651.73       |      256.99
+
+Global L2 norm matched exactly (5.6348479009) across every mode at every
+size in this sweep -- GPU-aware MPI is correct at every grid size tested,
+not just 16384².
+
+Finding: GPU-aware MPI's total time is nearly FLAT from 1024² to 16384²
+(287 -> 315 ms) despite the halo payload growing ~16x (1024 to 16384
+doubles per exchange), and only starts climbing once 32768² finally makes
+the actual transfer big enough to matter. This is the signature of a
+fixed per-call cost dominating, not bandwidth. Confirmed directly with a
+phase-timed variant (stencil/stencil_gpu_mpi_profile.cu, same job,
+per-iteration MPI_Wtime around pack/MPI/unpack/compute; adds two sync
+barriers per iteration versus the unsynced production loop, so totals
+here run a hair higher):
+
+Grid Size  | Pack (ms) | MPI (ms) | Unpack (ms) | Compute (ms)
+-----------|-----------|----------|-------------|-------------
+1024²      |  0.0098   |  2.6712  |   0.0097    |   0.0079
+2048²      |  0.0099   |  2.7679  |   0.0097    |   0.0113
+4096²      |  0.0114   |  2.7873  |   0.0106    |   0.0291
+8192²      |  0.0119   |  2.7090  |   0.0106    |   0.0943
+16384²     |  0.0125   |  2.7393  |   0.0108    |   0.3574
+32768²     |  0.0214   |  2.7209  |   0.0110    |   1.4043
+
+UCX transport actually selected (UCX_LOG_LEVEL=info, one representative
+run at 4096², same UCX_TLS pinning as above): `ucp_worker.c:1903 UCX INFO
+... intra-node cfg#2 tag(sysv/memory knem/memory cuda_ipc/cuda)
+rma(sysv/memory posix/memory)`. For tag-matched (Send/Recv) CUDA memory
+UCX picked cuda_ipc, not a host-copy fallback. So whatever the cost is,
+it is not a wrong-transport artifact -- the correct zero-copy mechanism
+was selected.
+
+## !! THE TWO SECTIONS BELOW ARE SUPERSEDED -- read the RE-BASELINE first !!
+## (job 59853, 2026-08-03). Everything below was measured with
+## UCX_TLS=self,sm,cuda_copy,cuda_ipc exported. That pinning is ITSELF the
+## cause of the ~265 ms "connection setup" cost described below. Under UCX
+## defaults there is no such cost: GPU-aware MPI is already converged at
+## warmup=1 and essentially ties IPC. The sections are kept because the
+## fixed/marginal decomposition reasoning is correct and reusable, and
+## because they document how the misconfiguration presents. But do NOT cite
+## the ~265 ms figure as a property of CUDA-aware MPI. Jump to
+## "RE-BASELINE (authoritative)" at the end of this file.
+
+## Root cause under UCX_TLS pinning: one-time setup, not per-call overhead
+(established 2026-07-28, jobs 52200 + 56750, and cross-checked against
+LULESH job 46508)
+
+*** The earlier reading of this file -- "flat ~2.7 ms/iteration = fixed
+*** per-call cost" -- was WRONG. It is one ~260 ms cost divided by 100
+*** iterations. The flatness across grid sizes means the SETUP is
+*** size-independent, not that per-call cost is size-independent.
+
+Decisive evidence. Same binary, same grid (8192²), only the iteration
+count varied (job 56750, both runs under nsys):
+
+  iterations | total time | cuMemHostRegister_v2 | cuIpcOpenMemHandle_v2
+  -----------|------------|----------------------|----------------------
+       3     | 261.42 ms  |        8 calls       |        6 calls
+      15     | 268.22 ms  |        8 calls       |        6 calls
+
+Both CUDA API call counts are IDENTICAL at 3 and 15 iterations, so both
+are one-time setup, not per-iteration work. (An earlier note here claimed
+the 8 cuMemHostRegister_v2 calls matched the 8 iterations of job 52200 --
+that was a coincidence: nsys aggregates across all 4 ranks, so 8 = 2 calls
+per rank. The giveaway was that the aggregated CUDA API time, 628 ms,
+exceeded the 265 ms wall time, which is impossible for a single process.)
+The 6 cuIpcOpenMemHandle_v2 calls are the peer-connection count: ranks
+0..3 in a line open 1+2+2+1 = 6 mappings.
+
+Decomposition: fixed ≈ 259.7 ms, marginal ≈ 0.57 ms/iter. That fixed cost
+reproduces every MPI-phase number in the table above: 2.67-2.79 ms/iter
+× 100 iterations = 267-279 ms.
+
+CAVEAT on the marginal figure: both job 56750 runs were under nsys, whose
+per-operation overhead inflates the marginal term. An earlier estimate of
+0.19 ms/iter here was worse -- it differenced an nsys-instrumented 8-iter
+run against a non-nsys 100-iter run. Clean steady-state stencil numbers
+require the warmup A/B run (job 57012). The clean numbers currently
+available are LULESH's, below.
+
+Why: UCX establishes CUDA-aware connections LAZILY, on first message.
+None of the three stencil variants had a warmup iteration -- all start
+cudaEventRecord(ev_start) and immediately enter the loop -- so that setup
+is charged to the timed region. Meanwhile:
+  - staged MPI sends host buffers: no IPC open, no device registration,
+    so its lazy setup is cheap and invisible.
+  - IPC does its handle exchange BEFORE the timed loop by construction,
+    so its equivalent setup is excluded by design.
+That makes the published GPU-aware-vs-IPC stencil comparison
+apples-to-oranges. By contrast transpose_ipc.cu:444 runs
+`for (iter = 0; iter <= iterations; iter++)` and starts its timer at
+`iter == 1` -- transpose HAS a warmup, which absorbs UCX's lazy setup.
+That, not message size, is why GPU-aware MPI looks competitive for
+transpose and catastrophic for stencil.
+
+Independent replication in LULESH (job 46508, 8 ranks, size 45; no nsys,
+so these marginals are clean):
+
+  variant | total (200 it) | total (~3145 it) | fixed    | marginal ms/iter
+  --------|----------------|------------------|----------|------------------
+  gpumpi  |    3.84 s      |     5.82 s       | 3.71 s   |      0.672
+  staged  |    0.17 s      |     2.45 s       | 0.015 s  |      0.774
+  ipc     |    0.14 s      |     1.96 s       | 0.016 s  |      0.618
+
+In steady state gpumpi is ~13% FASTER than staged and ~8% behind ipc.
+Fixed cost scales with peer-connection count: ~0.26 s for the stencil
+(4 ranks, 2 neighbours) vs ~3.71 s for LULESH (8 ranks, up to 26
+neighbours). Two applications, different communication patterns, same
+signature.
+
+Corrected conclusion: CUDA-aware MPI on this cluster is correct, selects
+the right zero-copy transport, and is competitive in steady state. Its
+liability is a large one-time connection-establishment cost that MPI
+defers to the first message -- exactly the cost a window abstraction pays
+once, explicitly, at construction time, where the application controls it.
+
+## Warmup A/B -- direct confirmation (job 57012, h200x4, 2026-07-28)
+STENCIL_WARMUP env var (default 0) added to all three variants. 100 timed
+iterations, 4 GPUs, no nsys. Total time in ms, slowest rank:
+
+Grid    | warmup |  IPC   | staged | GPU-aware || setup cost
+        |        |        |        |           || (wu0 - wu5)
+--------|--------|--------|--------|-----------||------------
+1024²   |   0    |   4.11 |   6.60 |   272.26  ||
+1024²   |   1    |   3.85 |   6.27 |   128.38  ||
+1024²   |   5    |   4.08 |   6.23 |     4.88  ||   267.4
+2048²   |   0    |   3.84 |   7.66 |   274.97  ||
+2048²   |   1    |   3.66 |   7.42 |   107.71  ||
+2048²   |   5    |   3.62 |   7.37 |     5.23  ||   269.7
+4096²   |   0    |   6.04 |  10.91 |   261.10  ||
+4096²   |   1    |   5.85 |  10.62 |   106.40  ||
+4096²   |   5    |   5.88 |  10.70 |     7.33  ||   253.8
+8192²   |   0    |  12.99 |  20.24 |   282.31  ||
+8192²   |   1    |  12.78 |  19.87 |   155.16  ||
+8192²   |   5    |  12.86 |  19.80 |    13.94  ||   268.4
+16384²  |   0    |  39.41 |  51.19 |   308.06  ||
+16384²  |   1    |  39.25 |  50.72 |   165.56  ||
+16384²  |   5    |  39.12 |  50.80 |    40.44  ||   267.6
+32768²  |   0    | 144.52 | 164.77 |   407.96  ||
+32768²  |   1    | 144.23 | 163.85 |   249.81  ||
+32768²  |   5    | 144.30 | 163.96 |   145.55  ||   262.4
+
+Confirmed. Three results:
+
+1. The setup cost is 253.8-269.7 ms (mean ~265 ms), INDEPENDENT of grid
+   size -- as expected for connection establishment, and matching the
+   ~259.7 ms estimated independently from job 56750's iteration-count
+   decomposition. IPC and staged are unaffected by warmup (their numbers
+   move <1% across warmup values), confirming the cost is specific to
+   UCX's lazy CUDA-aware connection setup.
+
+2. At warmup=5, GPU-aware MPI is FASTER THAN STAGED MPI at every grid
+   size (1.13x to 1.46x) and converges to IPC: 1.20x behind at 1024²,
+   1.08x at 8192², 1.03x at 16384², 1.01x at 32768². The 6-14x
+   "catastrophe" was entirely setup cost.
+
+3. warmup=1 is NOT sufficient -- it removes only about half the cost
+   (e.g. 272 -> 128 ms at 1024²). So setup completes progressively over
+   several exchanges rather than all on the first message. Any benchmark
+   here needs >=5 warmup iterations for GPU-aware MPI; transpose's single
+   untimed iteration (transpose_ipc.cu:444) is likely also insufficient
+   and its GPU-aware column may still carry residual setup cost. WORTH
+   RE-CHECKING before citing transpose GPU-aware numbers.
+
+Correctness: all three modes produced identical L2 norms within every
+(size, warmup) group -- 5.6348479009 at warmup=0, 5.6069526143 at
+warmup=1, 5.4993758077 at warmup=5. (The value changes with warmup
+because more stencil applications occur; agreement ACROSS MODES at a
+given warmup is the correctness check.) 18 runs per warmup level, no
+failures.
+
+IMPLICATION FOR THE PAPER: IPC's steady-state advantage over properly
+warmed GPU-aware MPI on the packed/buffered path is only ~1-3% at the
+large grids. The stencil comparison should therefore NOT be presented as
+"IPC beats GPU-aware MPI on throughput." The defensible claims are
+(a) the lifecycle/setup argument, now quantified at ~265 ms that a window
+amortizes explicitly at construction while MPI defers it to first
+message, and (b) the peer-pointer capability that GPU-aware MPI cannot
+express at all (the fused single-kernel transpose), which remains the
+strongest performance argument in the paper.
+
+
+################################################################################
+## RE-BASELINE (authoritative) -- job 59853, h200x8-04, 2026-08-03
+################################################################################
+
+Single job, single node, single configuration, so every number here has
+identical provenance:
+  * UCX defaults -- UCX_TLS deliberately NOT exported
+  * warmup = 20 (STENCIL_WARMUP), past the convergence knee
+  * uniform build: -O3 -gencode arch=compute_90,code=sm_90
+  * ranks 2/4/8 all from the same 8-GPU node
+Correctness: one L2 value, 5.1449605829, identical across every mode, every
+grid size, every rank count. 54/54 stencil runs succeeded.
+
+Total time in ms (100 timed iterations, slowest rank):
+
+        |------- 2 ranks -------|------- 4 ranks -------|------- 8 ranks -------|
+Grid    |   IPC  staged  gpuMPI |   IPC  staged  gpuMPI |   IPC  staged  gpuMPI
+--------|-----------------------|-----------------------|----------------------
+1024²   |  see rebaseline_59853.out for the full 54-row table (tagged RESULT)
+4 ranks (the configuration the paper reports):
+Grid    |   IPC | staged | GPU-aware
+--------|-------|--------|----------
+1024²   |  3.95 |   7.80 |   4.71
+2048²   |  4.02 |   9.48 |   4.93
+4096²   |  6.07 |  13.20 |   7.05
+8192²   | 12.92 |  23.42 |  13.53
+16384²  | 39.00 |  57.50 |  39.75
+32768²  |143.04 | 161.44 | 143.73
+
+### Headline result
+
+Under a default UCX configuration, GPU-aware MPI is NOT anomalous. It
+essentially ties wrapper-mediated IPC -- 2% behind at 16384², 0.5% behind at
+32768² -- and beats host-staged MPI by 1.1x to 1.9x at every size. There is
+no ~265 ms setup penalty; see the warmup control below.
+
+### Warmup control: the ~265 ms cost is caused by UCX_TLS pinning
+
+GPU-aware MPI, 4 ranks, UCX DEFAULTS, varying warmup:
+
+  warmup |  stencil 1024² | stencil 16384² | transpose 16384² (MB/s)
+  -------|----------------|----------------|------------------------
+     1   |     4.88 ms    |    39.95 ms    |      1,073,277
+     2   |     4.80 ms    |    39.88 ms    |      1,074,014
+     5   |     4.74 ms    |    39.69 ms    |      1,073,900
+    20   |     4.69 ms    |    39.73 ms    |      1,074,167
+
+Already converged at warmup=1. Contrast with UCX_TLS pinned at stencil 1024²:
+272 ms (warmup=0) -> 128 ms (warmup=1) -> 4.88 ms (warmup=5). The pinning is
+the entire cause. Removing it removes both the setup cost AND the need for
+extra warmup iterations.
+
+### Scope: which "setup cost" findings survive
+
+SURVIVES -- LULESH. Its `gpumpi_default_45_200` case in
+  ucx_lulesh_experiments_46508/ was ALREADY a UCX-default run and still shows
+  3.84 s / 19.2 ms-per-iter, i.e. a genuine ~3.7 s fixed cost independent of
+  the pinning. Cause still unidentified: candidates are its far larger peer
+  count (up to 26 neighbours vs 2 here), its cudaHostRegister of the recv
+  buffer, and the teardown context errors. Remains a legitimate diagnostic.
+
+DOES NOT SURVIVE -- stencil and transpose. Their apparent setup cost was
+  pinning-induced and vanishes under defaults.
+
+### Environment sensitivity of host-staged MPI (a real limitation)
+
+Staged MPI is by far the most environment-sensitive number measured. Transpose
+staged at 16384², B+=A^T:
+    37.3 GB/s  h200x4, UCX_TLS pinned
+    96.0 GB/s  h200x4, UCX defaults
+    58.6 GB/s  h200x8, UCX defaults, 4 ranks
+   114.8 GB/s  recorded 2026-05-05 (h200x4, defaults)
+A 3x spread across UCX settings and node types, while the IPC and GPU-aware
+columns reproduce within 1%. Restricting UCX_TLS is the single largest factor
+(2.6x). Treat host staging as an order-of-magnitude reference, not a precise
+baseline. Note the stencil's staged column moves in the OPPOSITE direction
+from transpose's under pinning (its halo is ~128 KiB vs transpose's ~512 MiB),
+so this is a large-message effect.
+
+### Actions taken / outstanding
+
+DONE: STENCIL_WARMUP + TRANSPOSE_WARMUP env vars added (defaults preserve
+      original behavior); UCX_TLS removed from this and future sweeps.
+TODO: LULESH/run_lulesh.sbatch and run_lulesh_verify.sbatch still export
+      UCX_TLS and should stop.
+TODO: transpose np=8 failed from order=8192 onward for all IPC-touching modes
+      (28 of 220 results), cascading once the first failure occurred, while
+      staged kept working. Not in the paper's tables. Diagnostic job 60057
+      queued to determine whether this is leaked CUDA IPC state or a genuine
+      np=8 limit; gpumpi failing too (it never loads the interposer) argues
+      for UCX/driver-level state rather than an interposer bug.

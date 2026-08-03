@@ -439,11 +439,29 @@ int main(int argc, char **argv)
     /* ==================================================================
      * MAIN LOOP
      * ================================================================== */
+    /* Untimed warmup iterations (TRANSPOSE_WARMUP, default 1 == the original
+     * PRK behavior, bit-identical to before).  UCX establishes CUDA-aware
+     * connections lazily and on this cluster needs several exchanges to
+     * finish: one warmup iteration removes only about half the setup cost
+     * (measured in the stencil, job 57012 -- see results/stencil_results.txt).
+     * COMM_MODE=2 (GPU-aware MPI) therefore needs a larger value than the
+     * default to report steady-state numbers. */
+    int warmup = 1;
+    {
+        const char *w = getenv("TRANSPOSE_WARMUP");
+        if (w && *w) {
+            char *end = NULL;
+            long v = strtol(w, &end, 10);
+            if (end != w && v >= 0) warmup = (int)v;
+        }
+    }
+    if (my_ID == 0) printf("Warmup iterations (untimed): %d\n", warmup);
+
     double t0 = 0.0;
 
-    for (int iter = 0; iter <= iterations; iter++) {
+    for (int iter = 0; iter < warmup + iterations; iter++) {
 
-        if (iter == 1) {
+        if (iter == warmup) {
             CUDA_CHECK(cudaDeviceSynchronize());
             MPI_Barrier(MPI_COMM_WORLD);
             t0 = MPI_Wtime();
@@ -605,11 +623,14 @@ int main(int argc, char **argv)
 
     double abserr = 0.0;
 #if ACCUMULATE
-    double addit = ((double)(iterations + 1) * (double)iterations) / 2.0;
+    /* Total executed iterations is warmup + iterations; with the default
+     * warmup=1 this reduces to the original (iterations + 1) accounting. */
+    const double total_it = (double)(warmup + iterations);
+    double addit = (total_it * (total_it - 1.0)) / 2.0;
     for (size_t j = 0; j < (size_t)Bo; j++)
         for (size_t i = 0; i < (size_t)order; i++) {
             double expected = (double)((double)order * i + j + colstart)
-                              * (iterations + 1) + addit;
+                              * total_it + addit;
             abserr += fabs(B_h[i + (size_t)order * j] - expected);
         }
 #else

@@ -185,14 +185,34 @@ int main(int argc, char** argv)
     double weight = 0.25;
     int iterations = 100;
 
+    // Untimed warmup iterations (STENCIL_WARMUP, default 0). Kept identical to
+    // the GPU-aware and IPC variants so all three can be timed on equal terms;
+    // default 0 preserves the original timing behavior.
+    int warmup = 0;
+    {
+        const char* w = getenv("STENCIL_WARMUP");
+        if (w && *w) {
+            char* end = NULL;
+            long v = strtol(w, &end, 10);
+            if (end != w && v > 0) warmup = (int)v;
+        }
+    }
+    if (rank == 0) printf("Warmup iterations (untimed): %d\n", warmup);
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     cudaEvent_t ev_start, ev_stop;
     cudaEventCreate(&ev_start);
     cudaEventCreate(&ev_stop);
-    cudaEventRecord(ev_start);
 
-    for (int iter = 0; iter < iterations; iter++) {
+    for (int iter = 0; iter < warmup + iterations; iter++) {
+
+        // Start the clock only once the warmup iterations are done.
+        if (iter == warmup) {
+            cudaDeviceSynchronize();
+            MPI_Barrier(MPI_COMM_WORLD);
+            cudaEventRecord(ev_start);
+        }
 
         // === PACK EDGES ===
 

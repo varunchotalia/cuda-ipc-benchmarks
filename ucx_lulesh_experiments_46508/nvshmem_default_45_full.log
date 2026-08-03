@@ -1,0 +1,41 @@
+Host h200x8-01 using GPU 3: NVIDIA H200 NVL
+Host h200x8-01 using GPU 1: NVIDIA H200 NVL
+Host h200x8-01 using GPU 0: NVIDIA H200 NVL
+Host h200x8-01 using GPU 7: NVIDIA H200 NVL
+Host h200x8-01 using GPU 2: NVIDIA H200 NVL
+Host h200x8-01 using GPU 4: NVIDIA H200 NVL
+Host h200x8-01 using GPU 5: NVIDIA H200 NVL
+Host h200x8-01 using GPU 6: NVIDIA H200 NVL
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+/dvs/p4/build/sw/rel/gpgpu/toolkit/r12.8/main_nvshmem/src/modules/transport/ibrc/ibrc.cpp:nvshmemt_init:1852: neither nv_peer_mem, or nvidia_peermem detected. Skipping transport.
+
+Running until t=0.010000, Problem size=45x45x45
+   Used Memory         =  1192.2500 Mb
+Run completed:  
+   Problem size        =  45 
+   MPI tasks           =  8 
+   Iteration count     =  3145 
+   Final Origin Energy = 1.482403e+06 
+   Testing Plane 0 of Energy Array on rank 0:
+        MaxAbsDiff   = 6.839400e-10
+        TotalAbsDiff = 1.725431e-08
+        MaxRelDiff   = 8.342096e-14
+
+
+Elapsed time         =       1.99 (s)
+Grind time (us/z/c)  = 0.0069287957 (per dom)  (0.00086609947 overall)
+FOM                  =  1154601.8 (z/s)
+

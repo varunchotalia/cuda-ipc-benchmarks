@@ -192,29 +192,108 @@ Takeaways:
 Caveats:
 
 - Single-run numbers at one problem size; quote with that caveat.
-- UCX transports were pinned; the default selection can slow even
-  host-staged MPI by large factors (see the gpumpi appendix).
+- UCX transports were pinned (`UCX_TLS=self,sm,cuda_copy,cuda_ipc`) for
+  these runs. **A previous revision of this line claimed the UCX *default*
+  selection "can slow even host-staged MPI by large factors". That is
+  backwards and no data here supports it.** Measured evidence points the
+  other way: in job 59070, restricting `UCX_TLS` cost host-staged transpose
+  2.6x at 16384² (96.0 -> 37.3 GB/s), and within job 46508 itself
+  `staged_default_45_200` was the *fastest* staged case (0.14 s) while the
+  restricted `staged_ucx_self_sm_45_200` failed outright (rc=1). The pinning
+  was originally adopted to work around gpumpi's apparent slowness, which is
+  now attributed to a fixed setup cost rather than transport selection.
+  **Recommendation: stop exporting `UCX_TLS`** — `run_lulesh.sbatch` and
+  `run_lulesh_verify.sbatch` still do, and their numbers should be re-taken
+  under defaults before being quoted.
 - One staged run aborted with a Volume Error on freshly rebooted
   h200x8-03 and passed on rerun — treat isolated failures there with
   suspicion.
 
-### Appendix: gpumpi (CUDA-aware MPI) — correct but not reported
+### Appendix: gpumpi (CUDA-aware MPI) — one-time setup cost, not a broken path
 
-gpumpi passed the energy check but is excluded from the performance
-table: CUDA-aware MPI through UCX is misconfigured or broken on this
-system. Signature, emitted per message until silenced by
-`UCX_LOG_LEVEL=error`:
+**This section was rewritten 2026-07-28. The previous version claimed
+CUDA-aware MPI through UCX was "misconfigured or broken on this system."
+That conclusion was wrong, and the reasoning behind it was wrong in a
+specific, reproducible way: a large one-time connection-setup cost was
+divided by the iteration count and mistaken for per-iteration overhead.**
 
-```
-cuda_iface.h:85 UCX ERROR cuCtxGetApiVersion(ctx, &version) failed: invalid device context
-```
+gpumpi is correct (energy matches staged at every size) and, once
+connected, *faster than staged MPI*. The evidence is the UCX experiment
+sweep in `ucx_lulesh_experiments_46508/` (job 46508, 8 ranks, size 45),
+which happens to contain two different iteration counts for the same
+configuration and so permits a fixed/marginal decomposition. Using the
+**matched** `memcache_off` pair (200-iter 3.79 s, full 5.82 s) rather than
+mixing UCX configs:
 
-Its timings are poor and inconsistent — 2.47 s on the SXM node, 6.16 s on
-an NVL node — and pinning or disabling the obvious UCX CUDA knobs does
-not fix them. Those numbers would measure this system's UCX
-configuration, not CUDA-aware MPI as a technique; the one-sided variants
-avoid the UCX CUDA path entirely and staged host MPI runs cleanly, so
-those are the defensible baselines.
+| variant | total (200 iter) | total (full, ~3145 iter) | fixed cost | marginal ms/iter |
+|---------|------------------|--------------------------|-----------|------------------|
+| gpumpi  | 3.79 s           | 5.82 s                   | **3.65 s**| **0.689**        |
+| staged  | 0.17 s           | 2.45 s                   | 0.015 s   | 0.774            |
+| ipc     | 0.14 s           | 1.96 s                   | 0.016 s   | 0.618            |
+
+(An earlier revision paired `gpumpi_default_45_200` with the `memcache_off`
+full run — a mixed-config pair — giving 3.71 s / 0.672 ms. The conclusion is
+insensitive to this: every gpumpi 200-iteration run in job 46508 falls in
+3.79–4.01 s regardless of UCX setting.)
+
+In steady state gpumpi is ~13% faster than staged host MPI and ~8% behind
+ipc. The "19–20 ms/iter" that the 200-iteration sweep reports for gpumpi
+is 3.71 s of one-time cost ÷ 200. That is also why gpumpi looks flat at
+19.2 → 20.1 ms/iter across sizes 45 → 100 while ipc scales 0.70 → 1.25:
+a constant divided by a constant.
+
+A similar-looking artifact was found in the stencil benchmark (~0.26 s fixed
+cost), but **that one turned out to be caused by exporting
+`UCX_TLS=self,sm,cuda_copy,cuda_ipc` and disappears under UCX defaults**
+(job 59853: GPU-aware stencil is already converged at warmup=1 and ties IPC).
+LULESH's cost is *not* explained that way — `gpumpi_default_45_200` was
+already a UCX-default run and still shows 3.84 s / 19.2 ms-per-iter. So
+LULESH's fixed cost is a genuine, still-unexplained phenomenon rather than a
+transport-pinning artifact. Distinguishing candidates, none yet tested:
+
+- **Peer count.** LULESH exchanges with up to 26 neighbours per rank at 8
+  ranks; the stencil has 2. Connection setup plausibly scales with this.
+- **`cudaHostRegister`** of `commDataRecv` in `commAllocRecv` (this file's
+  backend), which the stencil has no equivalent of.
+- Whatever also produces the teardown context errors described below.
+
+See `results/stencil_results.txt` for the stencil re-baseline and the
+reasoning that separates the two cases.
+
+Three specific claims in the previous version were factually wrong:
+
+- **"emitted per message"** — the `cuCtxGetApiVersion` count is ~1025
+  whether the run does 200 iterations or 3145. A fixed count, not
+  per-message.
+- **The errors are not in the run at all.** In
+  `gpumpi_default_45_200.log`, `Elapsed time` prints at line 22 and the
+  errors span lines 26–1057. Every one is emitted *after* the solve
+  finished — pure teardown noise, outside the timed region.
+- **"silenced by `UCX_LOG_LEVEL=error`"** — an `UCX ERROR`-level message
+  is not suppressed at log level `error`. The CSV shows it was
+  `gpumpi_ucx_log_fatal` (level `fatal`) that produced 0 errors, and that
+  run was *slower* (4.01 s vs 3.84 s), confirming the errors are cosmetic
+  and unrelated to the timing.
+
+The previous version was right that UCX knobs don't help: `default`
+3.84 s, `tls_only` 3.79, `memcache_off` 3.79, `no_dmabuf` 3.80 — all
+within noise. But that is because none of them addresses a *setup* cost.
+
+Two genuine anomalies remain, both distinct from the data path:
+
+1. **~3.71 s of one-time setup inside the reported elapsed time.** Scales
+   plausibly with peer-connection count.
+2. **~1025 invalid-context errors at teardown.** Every backend calls
+   `cudaDeviceReset()` before `MPI_Finalize()` (see `lulesh.cu:4875-4881`),
+   but gpumpi is the only variant where UCX still holds CUDA *device*
+   memory registrations and IPC mappings at that moment — staged registers
+   host memory, nvshmem uses `nvshmem_finalize()`, and the IPC family tears
+   down its own mappings. So UCX cleans up against a context that has
+   already been destroyed. Reordering the teardown is the obvious fix and
+   has not yet been tried.
+
+Neither anomaly means the transport is broken. gpumpi's numbers should be
+reported with the fixed/marginal split above rather than excluded.
 
 ## File map
 
