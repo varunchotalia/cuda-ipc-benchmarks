@@ -365,11 +365,27 @@ int main(int argc, char **argv)
 
     nvshmem_barrier_all();
 
+    /* Untimed warmup iterations (TRANSPOSE_WARMUP, default 1 == the original
+     * PRK behavior, bit-identical to before). Mirrors transpose_ipc.cu so the
+     * two can be timed on equal terms. NVSHMEM does not use the UCX CUDA path,
+     * so it is not expected to need more than the default -- this exists for
+     * methodological parity, not because a deficiency was observed here. */
+    int warmup = 1;
+    {
+        const char *w = getenv("TRANSPOSE_WARMUP");
+        if (w && *w) {
+            char *end = NULL;
+            long v = strtol(w, &end, 10);
+            if (end != w && v >= 0) warmup = (int)v;
+        }
+    }
+    if (my_ID == 0) printf("Warmup iterations (untimed): %d\n", warmup);
+
     double t0 = 0.0;
 
-    for (int iter = 0; iter <= iterations; iter++) {
+    for (int iter = 0; iter < warmup + iterations; iter++) {
 
-        if (iter == 1) {
+        if (iter == warmup) {
             CUDA_CHECK(cudaStreamSynchronize(stream));
             nvshmem_barrier_all();
             t0 = MPI_Wtime();
@@ -443,11 +459,14 @@ int main(int argc, char **argv)
 
     double abserr = 0.0;
 #if ACCUMULATE
-    double addit = ((double)(iterations + 1) * (double)iterations) / 2.0;
+    /* Total executed iterations is warmup + iterations; with the default
+     * warmup=1 this reduces to the original (iterations + 1) accounting. */
+    const double total_it = (double)(warmup + iterations);
+    double addit = (total_it * (total_it - 1.0)) / 2.0;
     for (size_t j = 0; j < (size_t)Bo; j++)
         for (size_t i = 0; i < (size_t)order; i++) {
             double expected = (double)((double)order * i + j + colstart)
-                              * (iterations + 1) + addit;
+                              * total_it + addit;
             abserr += fabs(B_h[i + (size_t)order * j] - expected);
         }
 #else
