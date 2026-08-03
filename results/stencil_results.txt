@@ -421,3 +421,31 @@ Those jobs capture unfiltered per-rank output plus nvidia-smi topo -m and a
 cudaDeviceCanAccessPeer matrix. If the gap appears on -04 and not on -03,
 topology is the cause; if the fallback notice appears at np=8, the 8-rank
 series needs relabelling.
+
+UPDATE (2026-08-04): islands CONFIRMED from an existing log, no new job needed.
+lulesh_verify_46968.out ran on h200x8-02 (NVL class, same config as -04:
+CoresPerSocket=32 vs -03's 96) and its nvidia-smi topo matrix shows:
+
+        GPU0  GPU1  GPU2  GPU3  GPU4  GPU5  GPU6  GPU7
+  GPU0   X    NV6   NV6   NV6   SYS   SYS   SYS   SYS
+  GPU3  NV6   NV6   NV6    X    SYS   SYS   SYS   SYS
+  GPU4  SYS   SYS   SYS   SYS    X    NV6   NV6   NV6
+
+Islands are {0,1,2,3} and {4,5,6,7}; cross-group links are SYS -- PCIe plus the
+inter-socket interconnect, not NVLink. By contrast lulesh_verify_48078.out
+(h200x8-03) is NV18 on every pair: true all-to-all NVSwitch.
+
+The stencil's 1D neighbour chain at 8 ranks is 0-1,1-2,2-3,3-4,4-5,5-6,6-7, so
+exactly ONE pair (rank 3 <-> rank 4) crosses the boundary over SYS.
+
+STILL UNRESOLVED: whether cudaIpcOpenMemHandle actually fails on that pair.
+Cross-socket P2P over PCIe commonly fails, which would route that edge through
+the MPI fallback; but it can succeed on some systems, in which case the series
+is pure IPC with one slow edge. A topology matrix cannot distinguish these, and
+they have different implications for how the 8-rank series must be labelled.
+Job 60175 captures the cudaDeviceCanAccessPeer matrix and the unfiltered
+per-rank fallback notice, which settles it.
+
+Note the login node cannot answer this directly: login1 has no GPUs and no
+nvidia-smi. Slurm exposes only socket affinity (Gres=gpu:h200:8(S:0-1)),
+identical across all four nodes, and says nothing about NVLink structure.
