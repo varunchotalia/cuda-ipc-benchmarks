@@ -203,12 +203,17 @@ Caveats:
   was originally adopted to work around gpumpi's apparent slowness, which is
   now attributed to a fixed setup cost rather than transport selection.
   **`UCX_TLS` is no longer exported** — it was removed from
-  `run_lulesh.sbatch` and `run_lulesh_verify.sbatch` on 2026-08-04.
-  **Consequence: every performance number in this file was measured under the
-  old pinned configuration and no longer matches what these scripts produce.**
-  They should be re-taken under defaults before being quoted. The gpumpi
-  fixed/marginal decomposition in the appendix is unaffected, since it is
-  derived from job 46508 whose UCX config is recorded per-case.
+  `run_lulesh.sbatch` and `run_lulesh_verify.sbatch` on 2026-08-04. The
+  numbers in this file were taken under the old pinned configuration, but for
+  LULESH that appears to matter little: job 46508 ran the same binary both
+  ways and `gpumpi_default_45_200` (UCX defaults, 3.84 s) vs
+  `gpumpi_ucx_tls_only_45_200` (pinned, 3.79 s) differ by 1.3%. Consistent
+  with the penalty being large-message-specific — transpose stages ~512 MiB
+  per exchange, LULESH's halo planes at size 45 are tens of KB. So these
+  numbers are **not known to be wrong**; re-measuring under defaults is worth
+  doing for provenance consistency, not because the values are suspect.
+  Verification results are unaffected regardless: transport selection cannot
+  change numerics, and energy matched across every 46508 configuration.
 - One staged run aborted with a Volume Error on freshly rebooted
   h200x8-03 and passed on rerun — treat isolated failures there with
   suspicion.
@@ -239,6 +244,21 @@ mixing UCX configs:
 full run — a mixed-config pair — giving 3.71 s / 0.672 ms. The conclusion is
 insensitive to this: every gpumpi 200-iteration run in job 46508 falls in
 3.79–4.01 s regardless of UCX setting.)
+
+Two caveats on this table, both from reading the case definitions in
+`run_lulesh_ucx_experiments.sbatch`:
+
+- **It is a cross-transport comparison.** The gpumpi and ipc rows are UCX
+  (`--mca pml ucx`), but the staged rows come from `staged_ob1_*`, which ran
+  `--mca pml ob1 --mca btl self,vader,tcp` and bypasses UCX entirely. Each
+  variant's own 200-iter/full pairing is internally matched, so the
+  decompositions are individually valid, but "gpumpi vs staged" is comparing a
+  UCX path against an ob1/vader path.
+- **The gpumpi rows are from the pinned + `UCX_MEMTYPE_CACHE=n` case**, since
+  that is the only gpumpi *full* run job 46508 recorded. A fully-default
+  decomposition is not available from this data. It matters little given
+  default and pinned differ by 1.3% at 200 iterations, but a clean re-run
+  under defaults would remove the caveat.
 
 In steady state the marginal cost per iteration is gpumpi 0.689 ms, staged
 0.774 ms, ipc 0.618 ms. As ratios, to avoid percentage-convention ambiguity:
