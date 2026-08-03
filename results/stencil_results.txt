@@ -380,3 +380,44 @@ TODO: transpose np=8 failed from order=8192 onward for all IPC-touching modes
       queued to determine whether this is leaked CUDA IPC state or a genuine
       np=8 limit; gpumpi failing too (it never loads the interposer) argues
       for UCX/driver-level state rather than an interposer bug.
+
+### OPEN: is the 8-rank series pure IPC? (do not assign a cause yet)
+(raised in review 2026-08-04; jobs 60175 / 60176 queued)
+
+RETRACTED: an earlier explanation of the 8-rank gap as "more peers means more
+per-exchange MPI overhead" was speculation and is withdrawn. It was never
+tested.
+
+The real question is topological. Job 59853 ran on h200x8-04, which this repo
+documents as H200 NVL with BRIDGED NVLink groups; only h200x8-03 is SXM
+NVSwitch all-to-all (LULESH/run_lulesh_verify.sbatch:13,37). Rank-to-GPU
+binding is dev = local_rank % num_devices, so:
+
+  np=2 -> GPUs 0-1   within one island   (topologically clean)
+  np=4 -> GPUs 0-3   within one island   (topologically clean)
+  np=8 -> GPUs 0-7   SPANS both islands
+
+If the boundary pair (rank 3 <-> rank 4) cannot open a CUDA IPC mapping,
+stencil_ipc.cu:236 prints "not IPC-reachable ... using MPI send/recv fallback"
+and that pair silently uses two-sided MPI instead. In that case the series
+labelled "Wrapper IPC" at 8 ranks is really IPC plus a hybrid-MPI edge, and
+both its absolute numbers and its parity ratio mean something different from
+the 2- and 4-rank rows.
+
+Job 59853's log CANNOT settle this: that script filtered stdout to
+"Total time|Throughput|Global L2", so the fallback notice was discarded.
+Absence of the message from rebaseline_59853.out is not evidence.
+
+Even if the fallback did not trigger, cross-island CUDA IPC traverses a slower
+path than intra-island, which would independently explain a gap. So there are
+two distinct candidate causes and the data cannot currently separate them.
+
+Until jobs 60175 (h200x8-04, islands) and 60176 (h200x8-03, all-to-all) report:
+report the 2/4/8 panel DESCRIPTIVELY and assign no cause to the 8-rank gap.
+The 2- and 4-rank rows are unaffected -- both stay inside a single island --
+so 4-GPU results remain the primary evidence.
+
+Those jobs capture unfiltered per-rank output plus nvidia-smi topo -m and a
+cudaDeviceCanAccessPeer matrix. If the gap appears on -04 and not on -03,
+topology is the cause; if the fallback notice appears at np=8, the 8-rank
+series needs relabelling.
