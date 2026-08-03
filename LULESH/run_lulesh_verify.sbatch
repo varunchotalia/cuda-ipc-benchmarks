@@ -23,8 +23,10 @@ set -euo pipefail
 export NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
 export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
-# Pin UCX away from its broken CUDA-introspection path on these nodes
-export UCX_TLS=self,sm,cuda_copy,cuda_ipc
+# UCX_TLS is deliberately NOT pinned -- see the matching comment in
+# run_lulesh.sbatch. Briefly: the "broken CUDA-introspection path" rationale
+# was wrong, and restricting UCX_TLS harms host-staged MPI while fabricating a
+# lazy-connection penalty for CUDA-aware MPI. UCX defaults are authoritative.
 export UCX_LOG_LEVEL=error
 
 MPIWRAP_LIB=/lustre/nvwulf/home/vchotalia/mpiwrap/mpi-intercept/libmpiwrap.so
@@ -48,7 +50,7 @@ for V in $VARIANTS; do
         mpiwrap|mpiwrap_rp) PRELOAD="-x LD_PRELOAD=$MPIWRAP_LIB" ;;
         *)                  PRELOAD="" ;;
     esac
-    mpirun -np 8 $PRELOAD -x UCX_TLS -x UCX_LOG_LEVEL \
+    mpirun -np 8 $PRELOAD -x UCX_LOG_LEVEL \
         ./lulesh_$V -s $SIZE 2>&1 | tee run_$V.tmp \
         || echo "RUN FAILED: $V"
     ENERGY[$V]=$(awk '/Final Origin Energy/{print $5}' run_$V.tmp)

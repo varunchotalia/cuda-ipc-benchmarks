@@ -196,15 +196,26 @@ so these marginals are clean):
 
   variant | total (200 it) | total (~3145 it) | fixed    | marginal ms/iter
   --------|----------------|------------------|----------|------------------
-  gpumpi  |    3.84 s      |     5.82 s       | 3.71 s   |      0.672
+  gpumpi  |    3.79 s      |     5.82 s       | 3.65 s   |      0.689
   staged  |    0.17 s      |     2.45 s       | 0.015 s  |      0.774
   ipc     |    0.14 s      |     1.96 s       | 0.016 s  |      0.618
 
-In steady state gpumpi is ~13% FASTER than staged and ~8% behind ipc.
-Fixed cost scales with peer-connection count: ~0.26 s for the stencil
-(4 ranks, 2 neighbours) vs ~3.71 s for LULESH (8 ranks, up to 26
-neighbours). Two applications, different communication patterns, same
-signature.
+(Matched UCX-config pair: memcache_off at BOTH iteration counts. An earlier
+revision paired gpumpi_default_45_200 = 3.84 s with the memcache_off full
+run, giving 3.71 s / 0.672 ms -- a mixed pair. Conclusion unchanged; every
+gpumpi 200-iter run in job 46508 falls in 3.79-4.01 s regardless of setting.)
+
+In steady state, marginal cost per iteration: gpumpi 0.689 ms vs staged
+0.774 ms vs ipc 0.618 ms. Stated as ratios to avoid convention ambiguity:
+gpumpi is 1.12x faster than staged (0.774/0.689) and 1.11x slower than ipc
+(0.689/0.618). Fixed cost scales with peer-connection count: ~0.26 s for the
+stencil (4 ranks, 2 neighbours) vs ~3.65 s for LULESH (8 ranks, up to 26
+neighbours).
+
+NOTE: the stencil's ~0.26 s figure is now known to be a UCX_TLS-pinning
+artifact that vanishes under defaults; LULESH's ~3.65 s survives under
+defaults and is genuine. They are NOT the same phenomenon -- see the
+RE-BASELINE section at the end of this file.
 
 Corrected conclusion: CUDA-aware MPI on this cluster is correct, selects
 the right zero-copy transport, and is competitive in steady state. Its

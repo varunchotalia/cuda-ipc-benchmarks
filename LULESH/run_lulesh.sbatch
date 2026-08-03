@@ -22,8 +22,14 @@ MPIWRAP_LIB="/lustre/nvwulf/home/vchotalia/mpiwrap/mpi-intercept/libmpiwrap.so"
 export NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
 export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
-# Pin UCX away from its broken CUDA-introspection path on these nodes
-export UCX_TLS=self,sm,cuda_copy,cuda_ipc
+# UCX_TLS is deliberately NOT pinned. A previous revision exported
+#   export UCX_TLS=self,sm,cuda_copy,cuda_ipc
+# with the comment "pin UCX away from its broken CUDA-introspection path".
+# That rationale was wrong on both counts: gpumpi's slowness is a one-time
+# setup cost rather than a transport fault, and restricting UCX_TLS actively
+# harms host-staged MPI (2.6x on large messages, job 59070) while fabricating
+# a lazy-connection penalty for CUDA-aware MPI (job 59853). UCX defaults are
+# authoritative. See the gpumpi appendix in cuda/README.md.
 export UCX_LOG_LEVEL=error
 
 cd "$SRCDIR"

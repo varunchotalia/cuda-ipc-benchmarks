@@ -440,12 +440,18 @@ int main(int argc, char **argv)
      * MAIN LOOP
      * ================================================================== */
     /* Untimed warmup iterations (TRANSPOSE_WARMUP, default 1 == the original
-     * PRK behavior, bit-identical to before).  UCX establishes CUDA-aware
-     * connections lazily and on this cluster needs several exchanges to
-     * finish: one warmup iteration removes only about half the setup cost
-     * (measured in the stencil, job 57012 -- see results/stencil_results.txt).
-     * COMM_MODE=2 (GPU-aware MPI) therefore needs a larger value than the
-     * default to report steady-state numbers. */
+     * PRK behavior, bit-identical to before).
+     *
+     * Under a DEFAULT UCX configuration the default of 1 is sufficient:
+     * COMM_MODE=2 (GPU-aware MPI) is already converged at warmup=1
+     * (job 59853 -- 16384^2 gives 1,073,277 MB/s at warmup=1 vs 1,074,167 at
+     * warmup=20). No larger value is needed.
+     *
+     * It is only insufficient if UCX_TLS is pinned, which fabricates a large
+     * lazy-connection-setup cost: with UCX_TLS=self,sm,cuda_copy,cuda_ipc,
+     * GPU-aware MPI reads 1.5-7x slow at warmup=1 and needs >=5 (job 59067).
+     * The fix is to NOT export UCX_TLS rather than to raise this value.
+     * See results/transpose_results.md, appendix. */
     int warmup = 1;
     {
         const char *w = getenv("TRANSPOSE_WARMUP");
