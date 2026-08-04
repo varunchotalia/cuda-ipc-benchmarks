@@ -110,6 +110,11 @@ void unpack_ghost(const double* __restrict__ buffer,
 int main(int argc, char** argv)
 {
     MPI_Init(&argc, &argv);
+    // Lifecycle phase timing (always on; costs one MPI_Wtime per boundary).
+    // Reported as PHASE_* lines so a harness can parse them. See
+    // results/lulesh_results.csv-style provenance in results/.
+    const double t_app_start = MPI_Wtime();
+    double t_win_alloc = 0.0, t_win_query = 0.0, t_win_free = 0.0;
 
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -163,10 +168,13 @@ int main(int argc, char** argv)
         MPI_Info ipc_info;
         MPI_Info_create(&ipc_info);
         MPI_Info_set(ipc_info, "cuda_ipc", "1");
+        MPI_Barrier(MPI_COMM_WORLD);          // align ranks before timing
+        const double _t0_alloc = MPI_Wtime();
         MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
                          &d_ghost_recv_L, &win_recv_L);
         MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
                          &d_ghost_recv_R, &win_recv_R);
+        t_win_alloc = MPI_Wtime() - _t0_alloc;
         MPI_Info_free(&ipc_info);
     }
     cudaMalloc(&d_ghost_send_L, ghost_size);
@@ -212,6 +220,8 @@ int main(int argc, char** argv)
     double *peer_recv_L = NULL;  // left neighbor's RIGHT recv buffer
     double *peer_recv_R = NULL;  // right neighbor's LEFT recv buffer
     bool ipc_ok_L = false, ipc_ok_R = false;  // does the IPC put actually work?
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double _t0_query = MPI_Wtime();
 
     // Query neighbors: I write my LEFT edge → left neighbor's RIGHT recv buffer.
     // shared_query can fail -- another node, or a GPU-island boundary with no
@@ -240,6 +250,7 @@ int main(int argc, char** argv)
                (right_rank >= 0 && !ipc_ok_R) ? "fallback" : "n/a");
     }
 
+    t_win_query = MPI_Wtime() - _t0_query;
     printf("[Rank %d] IPC setup complete\n", rank);
 
     // ------------------------------------------------------------------------
@@ -442,8 +453,11 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------------
     // Cleanup
     // ------------------------------------------------------------------------
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double _t0_free = MPI_Wtime();
     MPI_Win_free(&win_recv_L);
     MPI_Win_free(&win_recv_R);
+    t_win_free = MPI_Wtime() - _t0_free;
     cudaFree(d_old);
     cudaFree(d_new);
     cudaFree(d_ghost_send_L);
@@ -451,6 +465,19 @@ int main(int argc, char** argv)
 
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_stop);
+
+    {
+        const double t_app = MPI_Wtime() - t_app_start;
+        double loc[4] = { t_win_alloc, t_win_query, t_win_free, t_app };
+        double mx[4];
+        MPI_Reduce(loc, mx, 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        if (rank == 0) {
+            printf("PHASE_WIN_ALLOCATE_ms %.4f\n", mx[0] * 1000.0);
+            printf("PHASE_PEER_QUERY_ms   %.4f\n", mx[1] * 1000.0);
+            printf("PHASE_WIN_FREE_ms     %.4f\n", mx[2] * 1000.0);
+            printf("PHASE_APP_TOTAL_ms    %.4f\n", mx[3] * 1000.0);
+        }
+    }
 
     MPI_Finalize();
 

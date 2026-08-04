@@ -153,8 +153,12 @@ Two consequences:
 Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks on
 **h200x8-03 (8× H200 SXM, NVSwitch all-to-all)**, OpenMPI 4.1.8 with
 **UCX default transport selection** (`UCX_TLS` deliberately unset).
-Job 60150; raw log in `results/raw/lulesh_verify_60150.out`, consolidated
-machine-readable rows in `results/lulesh_results.csv`.
+**Job 60150.** Authoritative machine-readable rows, with full provenance in
+the header block: **`results/lulesh_results.csv`**. Both figures below are
+generated from that file by `plots/make_lulesh_plots.py` — no values are
+hard-coded in the generator, so figure and data cannot drift apart. The raw
+log is retained locally as an audit trail but is deliberately not tracked
+(`.gitignore` excludes `*.out` repo-wide); see `results/raw/README.md`.
 
 **All nine variants passed correctness**: identical reported Final Origin
 Energy (`1.482403e+06` at the log's `%12.6e` precision) over the full run,

@@ -2,6 +2,9 @@
 """LULESH README charts. Writes plots/lulesh_variants_sxm.png and
 plots/lulesh_modes_sxm.png.
 
+All numbers are read from results/lulesh_results.csv -- nothing is hard-coded
+here, so the figures and the committed results file cannot drift apart.
+
 Data: job 60150 (h200x8-03, SXM/NVSwitch all-to-all), 8 ranks, -s 45, full
 sedov run to t=0.01, 3145 iterations, **UCX defaults** (UCX_TLS unset).
 
@@ -36,18 +39,44 @@ plt.rcParams.update({
     "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
 })
 
-# ---- job 60150: h200x8-03 (SXM), -s 45, 3145 iters, UCX defaults ----
-variants = [  # name, category, elapsed(s), throughput gain vs staged
-    ("direct",     "B", 1.25, +0.568),
-    ("ipc_rp",     "C", 1.36, +0.441),
-    ("mpiwrap_rp", "C", 1.36, +0.441),
-    ("ipc",        "A", 1.59, +0.233),
-    ("mpiwrap",    "A", 1.60, +0.225),
-    ("nvshmem",    "A", 1.74, +0.126),
-    ("gpumpi",     "T", 1.83, +0.071),
-    ("staged",     "T", 1.96,  0.000),
-    ("shmwin",     "W", 2.07, -0.053),
-]
+# ---- data: read from results/lulesh_results.csv (single source of truth) ----
+# Do not hard-code values here. The CSV carries node, command, environment,
+# correctness value and both precisions; see its header block.
+import csv, os
+
+CSV = os.path.join(os.path.dirname(__file__), "..", "results", "lulesh_results.csv")
+CATEGORY = {  # variant -> plot category
+    "direct": "B", "ipc_rp": "C", "mpiwrap_rp": "C",
+    "ipc": "A", "mpiwrap": "A", "nvshmem": "A",
+    "gpumpi": "T", "staged": "T", "shmwin": "W",
+}
+
+def load(path=CSV):
+    rows = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                continue
+            rows.append(line)
+    rd = csv.DictReader(rows)
+    out = {}
+    for r in rd:
+        out[r["variant"]] = {
+            "elapsed": float(r["elapsed_s_hi"]),
+            "gain": float(r["gain_pct"]) / 100.0,
+            "mode": r["mode"],
+        }
+    return out
+
+DATA = load()
+missing = set(CATEGORY) - set(DATA)
+if missing:
+    raise SystemExit(f"CSV is missing variants: {sorted(missing)}")
+
+# ascending elapsed == descending performance
+variants = [(k, CATEGORY[k], DATA[k]["elapsed"], DATA[k]["gain"])
+            for k in sorted(DATA, key=lambda k: DATA[k]["elapsed"])]
+
 MODE_COLOR = {"B": BLUE, "C": GREEN, "A": MAGENTA, "T": YELLOW, "W": GREY}
 MODE_LABEL = {
     "B": "mode B - direct field writes",
@@ -68,8 +97,8 @@ colors  = [MODE_COLOR[v[1]] for v in variants][::-1]
 bars = ax.barh(names, times, height=0.62, color=colors,
                edgecolor=SURFACE, linewidth=2)
 for bar, t, g in zip(bars, times, gains):
-    lab = (f"{t:.2f} s   (baseline)" if g == 0.0
-           else f"{t:.2f} s   ({g*100:+.1f}% z/s)")
+    lab = (f"{t:.3f} s   (baseline)" if g == 0.0
+           else f"{t:.3f} s   ({g*100:+.1f}% z/s)")
     ax.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, lab,
             va="center", ha="left", fontsize=9.5, color=INK)
 
@@ -96,9 +125,9 @@ plt.close(fig)
 fig, ax = plt.subplots(figsize=(7.4, 4.4), dpi=160)
 modes      = ["A\npack + copy\n+ unpack", "C\nremote-pack\n+ unpack",
               "B\ndirect field writes\n(no pack, no unpack)"]
-# hi-precision elapsed, recovered from the log's %10.8g grind-time field
-ipc_times  = [1.59228, 1.36079, 1.25024]   # ipc, ipc_rp, direct
-wrap_times = [1.59721, 1.36011, None]      # mpiwrap, mpiwrap_rp, (not evaluated)
+ipc_times  = [DATA["ipc"]["elapsed"], DATA["ipc_rp"]["elapsed"],
+              DATA["direct"]["elapsed"]]
+wrap_times = [DATA["mpiwrap"]["elapsed"], DATA["mpiwrap_rp"]["elapsed"], None]
 
 x = range(3)
 w = 0.32

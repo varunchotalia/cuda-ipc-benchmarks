@@ -102,6 +102,12 @@ void unpack_ghost(const double* __restrict__ buffer, double* __restrict__ grid,
 int main(int argc, char** argv)
 {
     MPI_Init(&argc, &argv);
+    // Lifecycle phase timing, mirroring stencil_ipc.cu so the phases are
+    // directly comparable. This variant has no MPI windows: its setup is
+    // plain cudaMalloc, and any lazy transport connection is charged to the
+    // first exchange inside the loop (which the warmup excludes from timing).
+    const double t_app_start = MPI_Wtime();
+    double t_alloc = 0.0;
 
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -133,6 +139,8 @@ int main(int argc, char** argv)
 
     // Allocate grids
     double *d_old, *d_new;
+    MPI_Barrier(MPI_COMM_WORLD);              // align ranks before timing
+    const double _t0_alloc = MPI_Wtime();
     cudaMalloc(&d_old, grid_size);
     cudaMalloc(&d_new, grid_size);
 
@@ -143,6 +151,7 @@ int main(int argc, char** argv)
     cudaMalloc(&d_send_buf_R, ghost_size);
     cudaMalloc(&d_recv_buf_L, ghost_size);
     cudaMalloc(&d_recv_buf_R, ghost_size);
+    t_alloc = MPI_Wtime() - _t0_alloc;
 
     cudaMemset(d_old, 0, grid_size);
     cudaMemset(d_new, 0, grid_size);
@@ -320,6 +329,18 @@ int main(int argc, char** argv)
     cudaFree(d_recv_buf_R);
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_stop);
+
+    {
+        const double t_app = MPI_Wtime() - t_app_start;
+        double loc[2] = { t_alloc, t_app }, mx[2];
+        MPI_Reduce(loc, mx, 2, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        if (rank == 0) {
+            printf("PHASE_WIN_ALLOCATE_ms %.4f\n", mx[0] * 1000.0);
+            printf("PHASE_PEER_QUERY_ms   0.0000\n");   // no windows
+            printf("PHASE_WIN_FREE_ms     0.0000\n");   // no windows
+            printf("PHASE_APP_TOTAL_ms    %.4f\n", mx[1] * 1000.0);
+        }
+    }
 
     MPI_Finalize();
 
