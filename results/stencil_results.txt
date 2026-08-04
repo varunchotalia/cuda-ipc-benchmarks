@@ -449,3 +449,57 @@ per-rank fallback notice, which settles it.
 Note the login node cannot answer this directly: login1 has no GPUs and no
 nvidia-smi. Slurm exposes only socket affinity (Gres=gpu:h200:8(S:0-1)),
 identical across all four nodes, and says nothing about NVLink structure.
+
+### Synchronisation asymmetry: real in structure, negligible in effect
+(job 60200, h200x8-03, 2026-08-04)
+
+Review raised that stencil_ipc.cu carries a per-iteration
+MPI_Barrier(MPI_COMM_WORLD) that stencil_gpu_mpi.cu and stencil_mpi.cu do not.
+CONFIRMED: the barrier is real and the comparison is not synchronisation-
+matched. It is not a bug -- a rank writes straight into its neighbour's recv
+buffer with no message to signal completion, so the neighbour must not unpack
+until the write lands. Blocking MPI_Sendrecv is self-synchronising and needs
+no equivalent.
+
+Two hypotheses were tested and BOTH FAILED:
+
+1. "A neighbour-only handshake would be cheaper, since a five-point stencil
+   needs only its two neighbours synchronised." Measured IPC time, barrier vs
+   neighbour-token, ms: 4 ranks 16384^2 36.89 vs 37.04; 32768^2 135.29 vs
+   135.45; 2 ranks 16384^2 67.98 vs 68.04. The barrier is marginally CHEAPER
+   at nearly every point -- OpenMPI's intra-node barrier beats four
+   Isend/Irecv plus a Waitall. Measured barrier cost at the sizes the paper
+   cites: <=0.4%. So Table V's parity numbers stand as published; the earlier
+   suggestion that 1.9%/0.5% is a "lower bound on IPC's advantage" is
+   WITHDRAWN -- the handicap is within noise.
+
+2. "Barrier scaling explains the 8-rank gap." It does not, and the sign was
+   always wrong: a global barrier costs MORE at 8 ranks, so it penalises IPC
+   more there and should SHRINK the gap -- yet the gap GREW (1.9%->3.9% at
+   16384^2). Confirmed directly: this job ran 8 ranks on h200x8-03, which is
+   NV18 all-to-all with NO islands and reported zero fallback ranks, and the
+   gap still appeared (+4.5% at 16384^2, +1.7% at 32768^2) versus +3.9%/+1.5%
+   on the island node. ISLANDS ARE THEREFORE ALSO ELIMINATED as the cause.
+   Most likely remaining explanation: at higher rank counts each rank does
+   less work per iteration, so fixed per-call MPI cost is a larger fraction.
+   Untested.
+
+The neighbour-token attempt was also INCORRECT, which the correctness check
+caught: at 8 ranks it produced L2 3.7550293292 (1024^2) and 5.0563202266
+(4096^2) against the correct 5.1449605829, while every barrier run matched. A
+token proves the neighbour finished WRITING, not UNPACKING; without a global
+sync ranks drift cumulatively and one can begin iteration i+1's write into a
+neighbour's recv buffer while it is still reading iteration i. It failed
+exactly where drift is largest (8 ranks) and compute slack smallest (small
+grids). Reverted to the global barrier, with the failure recorded in-code.
+
+Note LULESH's IPC family already does per-neighbour sync CORRECTLY, using a
+two-phase handshake -- a "buffer free" token before writing plus a "delivered"
+token after (see LULESH/cuda/README.md). That is exactly the second handshake
+the stencil would need. The pattern existed in this repo already.
+
+For the paper: disclose the asymmetry, quantify it at <=0.4%, and do not
+claim the parity figures are conservative. The transpose has the same
+asymmetry (COMM_MODE 0/1 carry in-loop barriers, 2/3 do not) but there a
+global barrier is the correct primitive for an all-to-all exchange, so it
+should be disclosed rather than changed.

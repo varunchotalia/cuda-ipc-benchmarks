@@ -152,26 +152,47 @@ pinned to `self,sm,cuda_copy,cuda_ipc`.
 **All nine variants passed correctness**: identical reported Final Origin
 Energy (`1.482403e+06` at the log's `%12.6e` precision) over the full run,
 including `direct`, whose atomicAdd reordering stayed below printed
-precision. **Eight defensible variants are reported in the main
-performance table**; gpumpi is deferred to the appendix note below.
+precision. **All nine variants are now reported**: gpumpi was previously
+deferred to an appendix on the strength of numbers taken under UCX
+pinning; under defaults it beats staged, so that exclusion no longer
+holds.
 
 **Headline: the interposer is free.** `mpiwrap` matches `ipc` in mode A
-(1.76 vs 1.75 s) and `mpiwrap_rp` matches `ipc_rp` in mode C (1.48 vs
-1.47 s) — an application written against portable MPI windows, preloaded
-with `libmpiwrap.so`, performs identically to hand-written CUDA IPC in
-every mode where both exist. `direct` establishes the upper bound
-(2.78× over staged); mpiwrap establishes the project thesis.
+(1.60 vs 1.59 s) and `mpiwrap_rp` matches `ipc_rp` in mode C
+(1.36 vs 1.36 s — identical) — an application written against portable MPI
+windows, preloaded with `libmpiwrap.so`, performs indistinguishably from
+hand-written CUDA IPC in every mode where both exist. These are matched
+pairs from the same run sharing identical transfer and synchronisation
+code, differing only in how the peer pointer is acquired, so this result
+does not depend on the staged baseline at all. `direct` establishes the
+upper bound; mpiwrap establishes the project thesis.
+
+Job 60150, h200x8-03 (SXM/NVSwitch all-to-all), 8 ranks, `-s 45`, full
+sedov run to t=0.01, 3145 iterations, **UCX defaults** (`UCX_TLS` unset).
+Percentages are throughput gain, `staged/variant − 1`, which equals the
+FOM ratio; time reduction is the smaller figure (e.g. `direct` is +56.8%
+z/s, equivalently 36.2% less time).
 
 | Variant | Mode | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
 |---------|------|------------:|--------:|----------:|----------:|
-| direct     | B | 1.28 | 0.407 | 1,796,653 | 2.78× |
-| ipc_rp     | C | 1.47 | 0.467 | 1,558,925 | 2.42× |
-| mpiwrap_rp | C | 1.48 | 0.470 | 1,552,615 | 2.41× |
-| ipc        | A | 1.75 | 0.556 | 1,307,411 | 2.03× |
-| nvshmem    | A | 1.76 | 0.560 | 1,304,443 | 2.02× |
-| mpiwrap    | A | 1.76 | 0.560 | 1,304,145 | 2.02× |
-| shmwin     | — | 2.09 | 0.665 | 1,095,799 | 1.70× |
-| staged     | — | 3.56 | 1.132 |   644,302 | 1.00× |
+| direct     | B | 1.25 | 0.397 | 1,833,814 | +56.8% |
+| ipc_rp     | C | 1.36 | 0.433 | 1,684,837 | +44.1% |
+| mpiwrap_rp | C | 1.36 | 0.433 | 1,685,677 | +44.1% |
+| ipc        | A | 1.59 | 0.506 | 1,439,888 | +23.3% |
+| mpiwrap    | A | 1.60 | 0.509 | 1,435,439 | +22.5% |
+| nvshmem    | A | 1.74 | 0.553 | 1,315,001 | +12.6% |
+| gpumpi     | — | 1.83 | 0.582 | 1,250,391 |  +7.1% |
+| staged     | — | 1.96 | 0.623 | 1,169,930 | baseline |
+| shmwin     | — | 2.07 | 0.658 | 1,107,443 |  −5.3% |
+
+**Supersedes job 46979**, which exported
+`UCX_TLS=self,sm,cuda_copy,cuda_ipc`. That pinning inflated staged from
+1.96 s to 3.56 s while moving every other variant ≤10%, so every
+speedup-vs-staged figure shifted. Three consequences worth stating:
+`direct` drops from 2.78× to +56.8% (1.57×); **`shmwin` flips sign** —
+previously reported 1.70× *faster* than staged, it is in fact ~5%
+*slower*, which is unsurprising for a backend that stages through a
+**host** window; and gpumpi moves from excluded to competitive.
 
 ![LULESH halo-exchange variants](../../plots/lulesh_variants_sxm.png)
 
@@ -180,20 +201,24 @@ every mode where both exist. `direct` establishes the upper bound
 Takeaways:
 
 - **Each mode step pays off**: remote-pack (C) removes the local staging
-  copy and gains 16% over pack+copy (A); direct field writes (B) also
-  remove the unpack and gain another 13%.
-- **Node type matters**: mode A ipc measured 1.75 s here (all-to-all SXM)
-  vs 1.94 s on an NVL node, where the plane-direction halos cross the
-  4-GPU-island boundary over PCIe + UPI (~10% penalty).
-- **staged trails everything** — per-message two-sided MPI with host
-  staging is a bad fit for LULESH's 26 mostly-tiny messages × 3 phases
-  per iteration.
+  copy and gains 17% over pack+copy (A) (1.59 → 1.36 s); direct field
+  writes (B) also remove the unpack and gain another 8% (1.36 → 1.25 s).
+- **Node type matters**: mode A ipc measured 1.75 s on all-to-all SXM
+  under the older pinned configuration vs 1.94 s on an NVL node, where the
+  plane-direction halos cross the 4-GPU-island boundary over PCIe + UPI
+  (~10% penalty). Not yet re-measured on an NVL node under defaults.
+- **Host staging is not the floor.** Under defaults staged (1.96 s) beats
+  `shmwin` (2.07 s) and trails `gpumpi` (1.83 s) by only 7%. The gap to the
+  IPC family is real but far smaller than the pinned numbers suggested.
 
 Caveats:
 
 - Single-run numbers at one problem size; quote with that caveat.
-- UCX transports were pinned (`UCX_TLS=self,sm,cuda_copy,cuda_ipc`) for
-  these runs. **A previous revision of this line claimed the UCX *default*
+- UCX transports are **no longer pinned** for these runs; the table above
+  is job 60150 under defaults. The paragraph below documents the pinning
+  that produced the superseded job 46979 numbers, and is retained because
+  the rationale for it was wrong in an instructive way.
+  **A previous revision of this line claimed the UCX *default*
   selection "can slow even host-staged MPI by large factors". That is
   backwards and no data here supports it.** Measured evidence points the
   other way: in job 59070, restricting `UCX_TLS` cost host-staged transpose

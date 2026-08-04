@@ -379,7 +379,7 @@ int main(int argc, char **argv)
             if (end != w && v >= 0) warmup = (int)v;
         }
     }
-    if (my_ID == 0) printf("Warmup iterations (untimed): %d\n", warmup);
+    if (my_PE == 0) printf("Warmup iterations (untimed): %d\n", warmup);
 
     double t0 = 0.0;
 

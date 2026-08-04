@@ -338,6 +338,32 @@ int main(int argc, char** argv)
         }
         if (ngreq > 0) MPI_Waitall(ngreq, greqs, MPI_STATUSES_IGNORE);
 
+        // Completion handshake. A rank writes straight into its neighbour's
+        // receive buffer, so the neighbour must not unpack until that write has
+        // landed -- and unlike MPI_Sendrecv there is no message to signal it.
+        // This is a genuine cost of the one-sided path that the GPU-aware and
+        // staged variants do not pay (their blocking Sendrecv is
+        // self-synchronising). It must therefore be disclosed as a
+        // synchronisation asymmetry when comparing against them.
+        //
+        // DO NOT replace this with a neighbour-only handshake. That was tried
+        // (job 60200) and it is RACY: exchanging a token with each neighbour
+        // proves the neighbour finished WRITING, but not that it finished
+        // UNPACKING. Without a global sync, ranks drift cumulatively, and a
+        // rank can begin iteration i+1's write into a neighbour's receive
+        // buffer while that neighbour is still reading iteration i out of it.
+        // It failed exactly where drift is largest and compute slack smallest:
+        // at 8 ranks, 1024^2 gave L2 3.7550293292 and 4096^2 gave 5.0563202266
+        // against the correct 5.1449605829, while every barrier run matched.
+        //
+        // It is also not faster. Same job, IPC time, barrier vs neighbour-token:
+        // 4 ranks 16384^2 36.89 vs 37.04 ms; 32768^2 135.29 vs 135.45 ms. The
+        // barrier is marginally CHEAPER -- OpenMPI's intra-node barrier beats
+        // four Isend/Irecv plus a Waitall. Measured cost of this barrier at the
+        // sizes the paper cites is <=0.4%.
+        //
+        // A correct neighbour-only scheme needs double-buffered receive buffers
+        // or a second post-unpack handshake: more complexity for no gain.
         MPI_Barrier(MPI_COMM_WORLD);
 
         // Unpack received ghosts into my grid
