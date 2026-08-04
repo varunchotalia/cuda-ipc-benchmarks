@@ -1,0 +1,27 @@
+# LULESH-CUDA halo-exchange backends -- consolidated results
+# job=60150  node=h200x8-03  node_class=H200 SXM (NVSwitch all-to-all, NV18 all pairs)
+# date=2026-08-04  scheduler=slurm  partition=h200x8  ranks=8  gpus=8
+# command=sbatch LULESH/run_lulesh_verify.sbatch
+# launch=mpirun -np 8 [-x LD_PRELOAD=libmpiwrap.so for mpiwrap*] -x UCX_LOG_LEVEL ./lulesh_$V -s 45
+# build=make -j8 all  (LULESH/cuda/src/Makefile)
+# modules=cuda12.8/toolkit/12.8.1 openmpi/gcc14.3/4.1.8 gcc/14.3.0
+# env=UCX_TLS UNSET (UCX default transport selection); UCX_LOG_LEVEL=error;
+#     NVSHMEM_BOOTSTRAP=MPI; NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
+# problem=-s 45 (45^3 zones/rank, 729000 zones total), full sedov run to t=0.01
+# iterations=3145  zone_cycles=2292705000
+# correctness=Final Origin Energy 1.482403e+06 for ALL NINE variants (consensus); ALL VARIANTS: PASS
+# elapsed_s_hi is derived from the log's %10.8g grind time (grind_us_z_c * zone_cycles / 1e6);
+#   the log's own "Elapsed time" field prints only 2 decimals, so use elapsed_s_hi for ratios.
+# gain_pct = (staged_elapsed / elapsed) - 1, i.e. throughput gain; equals the FOM ratio.
+# raw log: results/raw/lulesh_verify_60150.out
+# NOTE: single run, one problem size, one node class. No variance data.
+variant,mode,elapsed_s_log,elapsed_s_hi,grind_us_z_c,fom_z_per_s,gain_pct,energy,check
+direct,B,1.25,1.25024,0.00054531163,1833813.8,+56.75,1.482403e+06,MATCH
+ipc_rp,C,1.36,1.36079,0.0005935293,1684836.8,+44.01,1.482403e+06,MATCH
+mpiwrap_rp,C,1.36,1.36011,0.00059323335,1685677.3,+44.08,1.482403e+06,MATCH
+ipc,A,1.59,1.59228,0.00069449839,1439888.1,+23.07,1.482403e+06,MATCH
+mpiwrap,A,1.60,1.59721,0.00069665079,1435439.4,+22.69,1.482403e+06,MATCH
+nvshmem,A,1.74,1.74350,0.00076045567,1315001.0,+12.40,1.482403e+06,MATCH
+gpumpi,-,1.83,1.83359,0.00079974972,1250391.2,+6.88,1.482403e+06,MATCH
+staged,-,1.96,1.95969,0.00085475181,1169930.3,0.00,1.482403e+06,MATCH
+shmwin,-,2.07,2.07027,0.00090298107,1107442.9,-5.34,1.482403e+06,MATCH

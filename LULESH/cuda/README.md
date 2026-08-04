@@ -83,6 +83,11 @@ any hardware tested so far, since every peer has been reachable.
 | B — direct | `lulesh_direct` | `COMM_IPC COMM_DIRECT` | **no pack, no unpack**: one fused kernel per message reads the sender's strided boundary values and writes them into the receiver's field arrays at the mirrored halo positions |
 
 Mode B details:
+- **Framing:** `lulesh_direct` has **no mpiwrap counterpart**, so it is
+  evidence for the *peer-write capability ceiling* — what a general peer
+  pointer lets a kernel do that point-to-point MPI cannot express — and
+  **not** a measurement of interposed performance. Only the matched A and C
+  pairs support claims about abstraction transparency.
 - Swaps `lulesh-comms-gpu.cu` for `lulesh-comms-direct.cu` at build time and
   premaps all nine persistent nodal fields (`x,y,z,xd,yd,zd,fx,fy,fz`) of
   every peer via CUDA IPC at setup.
@@ -146,8 +151,10 @@ Two consequences:
 ## Results
 
 Full sedov run (`-s 45`, 3145 iterations to t=0.01), 8 ranks on
-**h200x8-03 (8× H200 SXM, NVSwitch all-to-all)**, OpenMPI 4.1.8 + UCX
-pinned to `self,sm,cuda_copy,cuda_ipc`.
+**h200x8-03 (8× H200 SXM, NVSwitch all-to-all)**, OpenMPI 4.1.8 with
+**UCX default transport selection** (`UCX_TLS` deliberately unset).
+Job 60150; raw log in `results/raw/lulesh_verify_60150.out`, consolidated
+machine-readable rows in `results/lulesh_results.csv`.
 
 **All nine variants passed correctness**: identical reported Final Origin
 Energy (`1.482403e+06` at the log's `%12.6e` precision) over the full run,
@@ -157,15 +164,35 @@ deferred to an appendix on the strength of numbers taken under UCX
 pinning; under defaults it beats staged, so that exclusion no longer
 holds.
 
-**Headline: the interposer is free.** `mpiwrap` matches `ipc` in mode A
-(1.60 vs 1.59 s) and `mpiwrap_rp` matches `ipc_rp` in mode C
-(1.36 vs 1.36 s — identical) — an application written against portable MPI
-windows, preloaded with `libmpiwrap.so`, performs indistinguishably from
-hand-written CUDA IPC in every mode where both exist. These are matched
-pairs from the same run sharing identical transfer and synchronisation
-code, differing only in how the peer pointer is acquired, so this result
-does not depend on the staged baseline at all. `direct` establishes the
-upper bound; mpiwrap establishes the project thesis.
+**Headline: no measurable steady-state penalty from the interposer.**
+Matched pairs agree to **within 0.4% in both modes** where a counterpart
+exists. Using elapsed times recovered at full precision from the log's
+`%10.8g` grind-time field (the `Elapsed time` field prints only two
+decimals, so it cannot resolve these gaps):
+
+| Mode | hand-written | interposed | delta |
+|------|-------------:|-----------:|------:|
+| A — pack + copy   | `ipc` 1.59228 s | `mpiwrap` 1.59721 s | **+0.310%** |
+| C — remote-pack   | `ipc_rp` 1.36079 s | `mpiwrap_rp` 1.36011 s | **−0.050%** |
+
+Note mode C's interposed variant is marginally *faster*, which is why
+these should be described as agreeing within 0.4% rather than as
+identical: the residual is run-to-run noise, not a measured cost.
+
+**Scope of this claim.** The LULESH timer starts at `lulesh.cu:4816`,
+*after* `NewDomain` (4773, which reaches `SetupCommBuffers` → the window
+and peer-pointer setup) and *after* the initial nodal-mass exchange
+`CommSBN` (4788). The timed region is therefore steady-state solve only:
+window construction, handle exchange, lazy peer mapping and teardown are
+all excluded. This result says the interposer imposes no measurable
+penalty **per iteration**; it does not measure lifecycle or setup
+overhead, and must not be described as the interposer being "free". The
+stencil and transpose timed regions exclude their setup on the same basis,
+so the same narrower wording applies to all three case studies.
+
+`direct` establishes the peer-write capability ceiling (see the mode-B note
+below); the matched A/C pairs are the direct evidence for abstraction
+transparency.
 
 Job 60150, h200x8-03 (SXM/NVSwitch all-to-all), 8 ranks, `-s 45`, full
 sedov run to t=0.01, 3145 iterations, **UCX defaults** (`UCX_TLS` unset).

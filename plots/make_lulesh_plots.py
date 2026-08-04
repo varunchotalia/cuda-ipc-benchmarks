@@ -96,8 +96,9 @@ plt.close(fig)
 fig, ax = plt.subplots(figsize=(7.4, 4.4), dpi=160)
 modes      = ["A\npack + copy\n+ unpack", "C\nremote-pack\n+ unpack",
               "B\ndirect field writes\n(no pack, no unpack)"]
-ipc_times  = [1.59, 1.36, 1.25]   # ipc, ipc_rp, direct (hand-written IPC family)
-wrap_times = [1.60, 1.36, None]   # mpiwrap, mpiwrap_rp, (no counterpart)
+# hi-precision elapsed, recovered from the log's %10.8g grind-time field
+ipc_times  = [1.59228, 1.36079, 1.25024]   # ipc, ipc_rp, direct
+wrap_times = [1.59721, 1.36011, None]      # mpiwrap, mpiwrap_rp, (not evaluated)
 
 x = range(3)
 w = 0.32
@@ -108,12 +109,12 @@ b2 = ax.bar([i + w/2 for i in x[:2]], wrap_times[:2], width=w, color=GREEN,
             label="mpiwrap (MPI windows + LD_PRELOAD interposer)")
 
 for bar, t in zip(b1, ipc_times):
-    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.2f} s",
+    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.3f} s",
             ha="center", fontsize=9.5, color=INK)
 for bar, t in zip(b2, wrap_times[:2]):
-    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.2f} s",
+    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.3f} s",
             ha="center", fontsize=9.5, color=INK)
-ax.text(2 + w/2, 0.55, "no interposer\ncounterpart\n(yet)", ha="center",
+ax.text(2 + w/2, 0.55, "hand-written\nIPC only", ha="center",
         va="center", fontsize=8.5, color=INK2, style="italic")
 ax.set_xlim(-0.55, 2.62)
 
@@ -126,7 +127,8 @@ ax.set_axisbelow(True)
 for side in ("top", "right"):
     ax.spines[side].set_visible(False)
 ax.tick_params(bottom=False)
-ax.set_title("Send modes: the interposer costs nothing at any rung",
+ax.set_title("Matched CUDA IPC and interposed MPI-window paths\n"
+             "(job 60150, 8 ranks / 8x H200 SXM, -s 45, default UCX)",
              fontsize=11.5, color=INK, loc="left", pad=14)
 ax.legend(loc="upper right", frameon=False, fontsize=9, labelcolor=INK2)
 fig.tight_layout()
