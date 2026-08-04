@@ -204,7 +204,17 @@ Percentages are throughput gain, `staged/variant − 1`, which equals the
 FOM ratio; time reduction is the smaller figure (e.g. `direct` is +56.8%
 z/s, equivalently 36.2% less time).
 
-| Variant | Mode | Elapsed (s) | ms/iter | FOM (z/s) | vs staged |
+**UNITS WARNING for FOM.** LULESH's own printout is misleading. `lulesh.cu:4707`
+emits `1000.0/grindTime2` labelled `(z/s)`, but `grindTime2` is in
+**microseconds** per zone per cycle, so the printed value is the true rate
+divided by 1000. The column below reproduces the printed value verbatim. The
+**true** rate for `direct` is 729,000 zones x 3,145 cycles / 1.25024 s =
+**1.834e9 zone-updates/s**, i.e. 1.834 **G**zone/s, not 1.834 Mzone/s.
+Sanity check: 1.834e9 over 8 GPUs is 229 M zone-updates/s per GPU, which is
+plausible for an H200; 1.834e6 would be 229 *thousand* per GPU, which is not.
+If a paper or table rescales this column, label it **Gzone/s**.
+
+| Variant | Mode | Elapsed (s) | ms/iter | FOM as printed (see units warning) | vs staged |
 |---------|------|------------:|--------:|----------:|----------:|
 | direct     | B | 1.25 | 0.397 | 1,833,814 | +56.8% |
 | ipc_rp     | C | 1.36 | 0.433 | 1,684,837 | +44.1% |
@@ -339,8 +349,13 @@ already a UCX-default run and still shows 3.84 s / 19.2 ms-per-iter. So
 LULESH's fixed cost is a genuine, still-unexplained phenomenon rather than a
 transport-pinning artifact. Distinguishing candidates, none yet tested:
 
-- **Peer count.** LULESH exchanges with up to 26 neighbours per rank at 8
-  ranks; the stencil has 2. Connection setup plausibly scales with this.
+- **Peer count -- but this does not fully account for it.** At the evaluated
+  2x2x2 decomposition there are 8 domains, so LULESH's 26 halo *directions*
+  collapse onto only **7 distinct peer ranks** (26 is the message count per
+  phase, not the peer count; an earlier revision of this file conflated the
+  two). Against the stencil's 2 neighbours that is 3.5x the peers for ~14x the
+  fixed cost, so peer count alone is insufficient -- something else, or
+  something superlinear, is involved. Untested.
 - **`cudaHostRegister`** of `commDataRecv` in `commAllocRecv` (this file's
   backend), which the stencil has no equivalent of.
 - Whatever also produces the teardown context errors described below.

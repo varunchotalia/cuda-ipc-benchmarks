@@ -208,9 +208,12 @@ gpumpi 200-iter run in job 46508 falls in 3.79-4.01 s regardless of setting.)
 In steady state, marginal cost per iteration: gpumpi 0.689 ms vs staged
 0.774 ms vs ipc 0.618 ms. Stated as ratios to avoid convention ambiguity:
 gpumpi is 1.12x faster than staged (0.774/0.689) and 1.11x slower than ipc
-(0.689/0.618). Fixed cost scales with peer-connection count: ~0.26 s for the
-stencil (4 ranks, 2 neighbours) vs ~3.65 s for LULESH (8 ranks, up to 26
-neighbours).
+(0.689/0.618). Fixed cost is larger for LULESH -- ~0.26 s for the stencil (4 ranks,
+2 neighbours) vs ~3.65 s for LULESH -- but peer count does NOT explain the
+ratio. At 2x2x2 LULESH has 8 domains and therefore only 7 distinct peer ranks
+(26 is the per-phase message count, not the peer count; an earlier revision
+here conflated them). 3.5x the peers for ~14x the fixed cost leaves the
+scaling unexplained.
 
 NOTE: the stencil's ~0.26 s figure is now known to be a UCX_TLS-pinning
 artifact that vanishes under defaults; LULESH's ~3.65 s survives under
@@ -347,7 +350,8 @@ SURVIVES -- LULESH. Its `gpumpi_default_45_200` case in
   ucx_lulesh_experiments_46508/ was ALREADY a UCX-default run and still shows
   3.84 s / 19.2 ms-per-iter, i.e. a genuine ~3.7 s fixed cost independent of
   the pinning. Cause still unidentified: candidates are its far larger peer
-  count (up to 26 neighbours vs 2 here), its cudaHostRegister of the recv
+  count (7 distinct peers at 2x2x2, and up to 26 messages per phase, vs 2
+  neighbours here), its cudaHostRegister of the recv
   buffer, and the teardown context errors. Remains a legitimate diagnostic.
 
 DOES NOT SURVIVE -- stencil and transpose. Their apparent setup cost was
@@ -357,10 +361,16 @@ DOES NOT SURVIVE -- stencil and transpose. Their apparent setup cost was
 
 Staged MPI is by far the most environment-sensitive number measured. Transpose
 staged at 16384², B+=A^T:
-    37.3 GB/s  h200x4, UCX_TLS pinned
-    96.0 GB/s  h200x4, UCX defaults
-    58.6 GB/s  h200x8, UCX defaults, 4 ranks
+    37.3 GB/s  h200x4-04, UCX_TLS pinned          (job 59070)
+    96.0 GB/s  h200x4-04, UCX defaults            (job 59070)
+   126.2 GB/s  h200x4-01, UCX defaults            (job 60153)
+    58.6 GB/s  h200x8-04, UCX defaults, 4 ranks   (job 59853)
    114.8 GB/s  recorded 2026-05-05 (h200x4, defaults)
+Note the 96.0 / 126.2 pair: both h200x4 under defaults, different nodes, 31%
+apart. So the spread is node-to-node as well as configuration-to-configuration,
+and the 2026-05-05 value of 114.8 sits inside the h200x4-defaults range.
+Job 60153 is also the run that reproduced the recorded transpose table's
+IPC and GPU-aware columns to within 0.3% at 16384².
 A 3x spread across UCX settings and node types, while the IPC and GPU-aware
 columns reproduce within 1%. Restricting UCX_TLS is the single largest factor
 (2.6x). Treat host staging as an order-of-magnitude reference, not a precise
@@ -468,10 +478,19 @@ Two hypotheses were tested and BOTH FAILED:
    neighbour-token, ms: 4 ranks 16384^2 36.89 vs 37.04; 32768^2 135.29 vs
    135.45; 2 ranks 16384^2 67.98 vs 68.04. The barrier is marginally CHEAPER
    at nearly every point -- OpenMPI's intra-node barrier beats four
-   Isend/Irecv plus a Waitall. Measured barrier cost at the sizes the paper
-   cites: <=0.4%. So Table V's parity numbers stand as published; the earlier
-   suggestion that 1.9%/0.5% is a "lower bound on IPC's advantage" is
-   WITHDRAWN -- the handicap is within noise.
+   Isend/Irecv plus a Waitall.
+
+   CAREFUL WITH THIS NUMBER: <=0.4% is the difference between the barrier and
+   the neighbour-token ALTERNATIVE. It is NOT the barrier's cost relative to no
+   handshake at all. That quantity is unmeasured and unmeasurable here, because
+   removing the handshake is racy (see below), so no run without one is valid.
+   What the data supports: the one-sided path REQUIRES a completion handshake
+   that the self-synchronising blocking-Sendrecv comparators do not, and the
+   two correct implementations of that handshake cost about the same. Its
+   absolute magnitude is not bounded by this experiment. This matters most at
+   32768^2, where the reported wrapper-vs-GPU-aware gap is only 0.5%.
+   The earlier suggestion that 1.9%/0.5% is a "lower bound on IPC's advantage"
+   is WITHDRAWN, but so is the claim that the handicap is quantified.
 
 2. "Barrier scaling explains the 8-rank gap." It does not, and the sign was
    always wrong: a global barrier costs MORE at 8 ranks, so it penalises IPC
