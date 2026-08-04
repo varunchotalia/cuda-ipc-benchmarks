@@ -370,8 +370,14 @@ int main(int argc, char** argv)
         // It is also not faster. Same job, IPC time, barrier vs neighbour-token:
         // 4 ranks 16384^2 36.89 vs 37.04 ms; 32768^2 135.29 vs 135.45 ms. The
         // barrier is marginally CHEAPER -- OpenMPI's intra-node barrier beats
-        // four Isend/Irecv plus a Waitall. Measured cost of this barrier at the
-        // sizes the paper cites is <=0.4%.
+        // four Isend/Irecv plus a Waitall.
+        //
+        // Those <=0.4% differences compare the two handshake IMPLEMENTATIONS
+        // with each other. They do NOT quantify what this handshake costs: that
+        // would need a run with no handshake, which cannot be correct. So the
+        // asymmetry against the self-synchronising Sendrecv comparators is real
+        // but its magnitude is unbounded by this experiment. Do not cite 0.4%
+        // as the handshake's cost.
         //
         // A correct neighbour-only scheme needs double-buffered receive buffers
         // or a second post-unpack handshake: more complexity for no gain.

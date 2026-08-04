@@ -517,8 +517,15 @@ two-phase handshake -- a "buffer free" token before writing plus a "delivered"
 token after (see LULESH/cuda/README.md). That is exactly the second handshake
 the stencil would need. The pattern existed in this repo already.
 
-For the paper: disclose the asymmetry, quantify it at <=0.4%, and do not
-claim the parity figures are conservative. The transpose has the same
-asymmetry (COMM_MODE 0/1 carry in-loop barriers, 2/3 do not) but there a
-global barrier is the correct primitive for an all-to-all exchange, so it
-should be disclosed rather than changed.
+For the paper: disclose the asymmetry, but do NOT attach 0.4% to it as a
+quantification -- see the CAREFUL WITH THIS NUMBER note above. 0.4% compares
+two handshake IMPLEMENTATIONS with each other; it does not measure what the
+handshake costs, which is unmeasurable here because no correct run exists
+without one. The defensible wording is qualitative: the one-sided path
+requires a completion handshake that the self-synchronising blocking-Sendrecv
+comparators do not, and this experiment does not bound its magnitude. Also do
+not claim the parity figures are conservative.
+
+The transpose has the same asymmetry (COMM_MODE 0/1 carry in-loop barriers,
+2/3 do not) but there a global barrier is the correct primitive for an
+all-to-all exchange, so it should be disclosed rather than changed.
