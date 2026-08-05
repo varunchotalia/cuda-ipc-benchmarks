@@ -24,11 +24,13 @@
 struct WinMeta {
     MPI_Comm comm;
     int rank, size;
-    size_t win_size;
-    cudaIpcMemHandle_t* handles;  // IPC handle from each rank
-    void** opened;                // cached opened pointers
-    void* self_base;              // my own base pointer
-    bool self_base_owned;         // true if we cudaMalloc'd it (MPI_Win_allocate)
+    size_t win_size;                        // MY size (peer_sizes has the rest)
+    int disp_unit = 1;                      // as passed at window construction
+    cudaIpcMemHandle_t* handles = nullptr;  // IPC handle from each rank
+    size_t* peer_sizes = nullptr;           // size of EACH rank, gathered at create
+    void** opened = nullptr;                // cached opened pointers
+    void* self_base = nullptr;              // my own base pointer
+    bool self_base_owned = false;           // true if we cudaMalloc'd it
     // fabric mode: multi-node NVLink (GB200/GH200 NVL-class systems)
     bool fabric = false;
     unsigned long long* fab_sizes = nullptr;              // padded bytes per rank
@@ -48,20 +50,26 @@ static bool is_device_ptr(const void* p) {
     return attr.type == cudaMemoryTypeDevice;
 }
 
+// All MPI work performed BY the interposer goes through PMPI_*, not MPI_*.
+// Calling MPI_* here would re-enter the profiling layer: our own calls would be
+// intercepted again by this library, and by any other PMPI tool layered with it
+// (Score-P and friends), which both distorts what such a tool reports and makes
+// the composition order significant. An interposer should be invisible to the
+// profiling interface it is built on.
 static bool info_has_cuda(MPI_Info info) {
     if (info == MPI_INFO_NULL) return false;
     char val[8]; int flag;
-    MPI_Info_get(info, "cuda_ipc", 7, val, &flag);
+    PMPI_Info_get(info, "cuda_ipc", 7, val, &flag);
     return flag && val[0] == '1';
 }
 
 static bool ranks_span_nodes(MPI_Comm comm) {
     MPI_Comm node;
-    MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
+    PMPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node);
     int nsize, csize;
-    MPI_Comm_size(node, &nsize);
-    MPI_Comm_size(comm, &csize);
-    MPI_Comm_free(&node);
+    PMPI_Comm_size(node, &nsize);
+    PMPI_Comm_size(comm, &csize);
+    PMPI_Comm_free(&node);
     return nsize != csize;
 }
 
@@ -90,8 +98,8 @@ static int fabric_win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
                                MPI_Comm comm, void* baseptr, MPI_Win* win)
 {
     int rank, nprocs;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nprocs);
+    PMPI_Comm_rank(comm, &rank);
+    PMPI_Comm_size(comm, &nprocs);
     int curdev = 0;
     cudaGetDevice(&curdev);
 
@@ -110,21 +118,21 @@ static int fabric_win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
     if (cuMemCreate(&mine, padded, &prop, 0) != CUDA_SUCCESS) {
         LOG("FATAL: cuMemCreate(FABRIC, %llu bytes) failed -- is the IMEX "
             "daemon running?", padded);
-        MPI_Abort(comm, 1);
+        PMPI_Abort(comm, 1);
     }
     CUmemFabricHandle myfh;
     memset(&myfh, 0, sizeof(myfh));
     if (cuMemExportToShareableHandle(&myfh, mine, CU_MEM_HANDLE_TYPE_FABRIC, 0)
         != CUDA_SUCCESS) {
         LOG("FATAL: cuMemExportToShareableHandle(FABRIC) failed");
-        MPI_Abort(comm, 1);
+        PMPI_Abort(comm, 1);
     }
 
     auto* allfh = (CUmemFabricHandle*)malloc(nprocs * sizeof(CUmemFabricHandle));
-    MPI_Allgather(&myfh, sizeof(myfh), MPI_BYTE,
+    PMPI_Allgather(&myfh, sizeof(myfh), MPI_BYTE,
                   allfh, sizeof(myfh), MPI_BYTE, comm);
     auto* sizes = (unsigned long long*)malloc(nprocs * sizeof(unsigned long long));
-    MPI_Allgather(&padded, 1, MPI_UNSIGNED_LONG_LONG,
+    PMPI_Allgather(&padded, 1, MPI_UNSIGNED_LONG_LONG,
                   sizes, 1, MPI_UNSIGNED_LONG_LONG, comm);
 
     auto* handles = (CUmemGenericAllocationHandle*)
@@ -143,14 +151,14 @@ static int fabric_win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
                                                 CU_MEM_HANDLE_TYPE_FABRIC)
                  != CUDA_SUCCESS) {
             LOG("FATAL: fabric import from rank %d failed", r);
-            MPI_Abort(comm, 1);
+            PMPI_Abort(comm, 1);
         }
         CUdeviceptr va = 0;
         if (cuMemAddressReserve(&va, sizes[r], gran, 0, 0) != CUDA_SUCCESS ||
             cuMemMap(va, sizes[r], 0, handles[r], 0) != CUDA_SUCCESS ||
             cuMemSetAccess(va, sizes[r], &acc, 1) != CUDA_SUCCESS) {
             LOG("FATAL: fabric map for rank %d failed", r);
-            MPI_Abort(comm, 1);
+            PMPI_Abort(comm, 1);
         }
         opened[r] = (void*)va;
     }
@@ -158,14 +166,16 @@ static int fabric_win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
 
     // zero-size window: purely the app-visible key for shared_query/free
     int rc = PMPI_Win_create(NULL, 0, disp_unit, info, comm, win);
-    if (rc != MPI_SUCCESS) MPI_Abort(comm, rc);
+    if (rc != MPI_SUCCESS) PMPI_Abort(comm, rc);
 
     auto* m = new WinMeta();
     m->comm = comm;
     m->rank = rank;
     m->size = nprocs;
     m->win_size = padded;
+    m->disp_unit = disp_unit;
     m->handles = nullptr;
+    m->peer_sizes = nullptr;   // fabric path reports sizes from fab_sizes
     m->opened = opened;
     m->self_base = opened[rank];
     m->self_base_owned = false;
@@ -194,18 +204,27 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
         return PMPI_Win_create(base, size, disp, info, comm, win);
 
     int rank, nprocs;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nprocs);
+    PMPI_Comm_rank(comm, &rank);
+    PMPI_Comm_size(comm, &nprocs);
 
     cudaIpcMemHandle_t my_handle;
     if (cudaIpcGetMemHandle(&my_handle, base) != cudaSuccess) {
         LOG("FATAL: cudaIpcGetMemHandle failed");
-        MPI_Abort(comm, 1);
+        PMPI_Abort(comm, 1);
     }
 
     auto* handles = (cudaIpcMemHandle_t*)malloc(nprocs * sizeof(cudaIpcMemHandle_t));
-    MPI_Allgather(&my_handle, sizeof(my_handle), MPI_BYTE,
+    PMPI_Allgather(&my_handle, sizeof(my_handle), MPI_BYTE,
                   handles, sizeof(my_handle), MPI_BYTE, comm);
+
+    // Gather every rank's window size too. MPI_Win_shared_query is specified to
+    // report the TARGET's size, so returning our own would be wrong for any
+    // window whose ranks allocate different amounts -- the collective is already
+    // here, so this costs one extra Allgather at construction and nothing later.
+    auto* peer_sizes = (size_t*)malloc(nprocs * sizeof(size_t));
+    size_t my_size = (size_t)size;
+    PMPI_Allgather(&my_size, sizeof(size_t), MPI_BYTE,
+                  peer_sizes, sizeof(size_t), MPI_BYTE, comm);
 
     // spanning communicators get a zero-size key window: the app only uses
     // the handle for shared_query/free, and registering device memory with
@@ -213,14 +232,16 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     int rc = ranks_span_nodes(comm)
                  ? PMPI_Win_create(NULL, 0, disp, info, comm, win)
                  : PMPI_Win_create(base, size, disp, info, comm, win);
-    if (rc != MPI_SUCCESS) MPI_Abort(comm, rc);
+    if (rc != MPI_SUCCESS) PMPI_Abort(comm, rc);
 
     auto* m = new WinMeta();
     m->comm = comm;
     m->rank = rank;
     m->size = nprocs;
     m->win_size = size;
+    m->disp_unit = disp;
     m->handles = handles;
+    m->peer_sizes = peer_sizes;
     m->opened = (void**)calloc(nprocs, sizeof(void*));
     m->self_base = base;
     m->self_base_owned = false;
@@ -239,7 +260,7 @@ int MPI_Win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
     if (ranks_span_nodes(comm)) {
 #if CUDA_VERSION >= 12040
         int ok = fabric_supported() ? 1 : 0, allok = 0;
-        MPI_Allreduce(&ok, &allok, 1, MPI_INT, MPI_MIN, comm);
+        PMPI_Allreduce(&ok, &allok, 1, MPI_INT, MPI_MIN, comm);
         if (allok)
             return fabric_win_allocate(size, disp_unit, info, comm, baseptr, win);
 #endif
@@ -278,7 +299,7 @@ int MPI_Win_shared_query(MPI_Win win, int target,
     if (m->fabric) {
         if (baseptr) *(void**)baseptr = m->opened[target];
         if (size)    *size = (MPI_Aint)m->fab_sizes[target];
-        if (disp)    *disp = 1;
+        if (disp)    *disp = m->disp_unit;
         return MPI_SUCCESS;
     }
 
@@ -293,8 +314,9 @@ int MPI_Win_shared_query(MPI_Win win, int target,
     }
 
     if (baseptr) *(void**)baseptr = m->opened[target];
-    if (size)    *size = m->win_size;
-    if (disp)    *disp = 1;
+    if (size)    *size = (MPI_Aint)(m->peer_sizes ? m->peer_sizes[target]
+                                                  : m->win_size);
+    if (disp)    *disp = m->disp_unit;
     return MPI_SUCCESS;
 }
 
@@ -326,6 +348,7 @@ int MPI_Win_free(MPI_Win* win)
             cudaFree(m->self_base);
         free(m->opened);
         free(m->handles);
+        free(m->peer_sizes);
         delete m;
         g_wins.erase(it);
     }
