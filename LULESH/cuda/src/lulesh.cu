@@ -83,6 +83,15 @@ Additional BSD Notice
 // Set after the init-time nodalMass exchange completes; the one-sided comm
 // backends switch on from that point (see comm/comm_backend.h).
 bool g_commActive = false ;
+
+/* Lifecycle phase accounting (E2a) -- see comm/comm_backend.h for the
+   contract. All values are milliseconds, per rank; the PHASE_* report takes a
+   max-reduce across ranks so the number is the slowest rank's cost, which is
+   what the application actually waits for. */
+double g_phaseCommSetupMs = 0.0 ;
+double g_phaseCommFreeMs  = 0.0 ;
+double g_phaseWinAllocMs  = 0.0 ;
+double g_phasePeerQueryMs = 0.0 ;
 #endif
 
 #include <sys/time.h>
@@ -488,8 +497,17 @@ Domain::SetupCommBuffers(Int_t edgeNodes)
   cudaMalloc(&this->d_commDataSend, comBufSize*sizeof(Real_t));
 
   // recv buffers (and any window / peer-mapping state) come from the
-  // selected comm backend
-  commAllocRecv(this, comBufSize) ;
+  // selected comm backend.
+  // E2a: timed uniformly for every backend. The barrier aligns ranks so the
+  // measurement is setup cost, not skew inherited from earlier init work.
+  // d_commDataSend above is already allocated, so one-time allocator/context
+  // warmup is paid before the timer starts in every backend.
+  MPI_Barrier(MPI_COMM_WORLD) ;
+  {
+     const double _t0 = MPI_Wtime() ;
+     commAllocRecv(this, comBufSize) ;
+     g_phaseCommSetupMs = (MPI_Wtime() - _t0) * 1000.0 ;
+  }
 
   // prevent floating point exceptions
   memset(this->commDataSend, 0, comBufSize*sizeof(Real_t)) ;
@@ -4743,6 +4761,7 @@ int main(int argc, char *argv[])
   MPI_Init(&argc, &argv) ;
   MPI_Comm_size(MPI_COMM_WORLD, &numRanks) ;
   MPI_Comm_rank(MPI_COMM_WORLD, &myRank) ;
+  const double t_app_start = MPI_Wtime() ;   /* E2a: end-to-end reference */
 #else
   numRanks = 1;
   myRank = 0;
@@ -4871,8 +4890,38 @@ int main(int argc, char *argv[])
    delete [] locDom->commDataSend ;
    cudaFree(locDom->d_commDataSend) ;
    // recv buffers, windows, and peer mappings (allocated by the backend)
-   commTeardown(locDom, myRank) ;
+   // E2a: teardown timed uniformly for every backend.
+   {
+      const double _t0 = MPI_Wtime() ;
+      commTeardown(locDom, myRank) ;
+      g_phaseCommFreeMs = (MPI_Wtime() - _t0) * 1000.0 ;
+   }
    COMM_RUNTIME_SHUTDOWN() ;
+
+   /* E2a lifecycle report. Max-reduce across ranks: the cost the application
+      actually waits for is the slowest rank's, not the average. Printed as
+      PHASE_* lines for the harness to parse; one line per phase, rank 0 only.
+      PHASE_WIN_ALLOCATE_ms / PHASE_PEER_QUERY_ms are a breakdown of
+      PHASE_COMM_SETUP_ms that only window-based backends supply -- they are
+      0.0000 elsewhere, which means "no breakdown available", NOT "free".
+      Only PHASE_COMM_SETUP_ms is comparable across all backends. */
+   {
+      double loc[5], mx[5] ;
+      loc[0] = g_phaseCommSetupMs ;
+      loc[1] = g_phaseWinAllocMs ;
+      loc[2] = g_phasePeerQueryMs ;
+      loc[3] = g_phaseCommFreeMs ;
+      loc[4] = (MPI_Wtime() - t_app_start) * 1000.0 ;
+      MPI_Reduce(loc, mx, 5, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD) ;
+      if (myRank == 0) {
+         printf("PHASE_COMM_SETUP_ms   %.4f\n", mx[0]) ;
+         printf("PHASE_WIN_ALLOCATE_ms %.4f\n", mx[1]) ;
+         printf("PHASE_PEER_QUERY_ms   %.4f\n", mx[2]) ;
+         printf("PHASE_COMM_FREE_ms    %.4f\n", mx[3]) ;
+         printf("PHASE_APP_TOTAL_ms    %.4f\n", mx[4]) ;
+         fflush(stdout) ;
+      }
+   }
 #else
   cudaDeviceReset();
 #endif

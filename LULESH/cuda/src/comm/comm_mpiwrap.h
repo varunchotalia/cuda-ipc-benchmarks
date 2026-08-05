@@ -23,12 +23,20 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
    MPI_Info info ;
    MPI_Info_create(&info) ;
    MPI_Info_set(info, "cuda_ipc", "1") ;
+   // E2a breakdown: window construction. The interposer's cudaMalloc and its
+   // collective handle Allgather both happen inside MPI_Win_allocate, so they
+   // are not separable from the application side and are reported together.
+   const double _t0win = MPI_Wtime() ;
    MPI_Win_allocate((MPI_Aint)(comBufSize*sizeof(Real_t)), sizeof(Real_t),
                     info, MPI_COMM_WORLD, (void *)&d->d_commDataRecv,
                     &d->ipcWin) ;
+   g_phaseWinAllocMs = (MPI_Wtime() - _t0win) * 1000.0 ;
    MPI_Info_free(&info) ;
    d->d_peerRecv = new Real_t*[d->m_numRanks] ;
    int nFallback = 0 ;
+   // E2a breakdown: lazy peer mapping. Each shared_query triggers at most one
+   // cudaIpcOpenMemHandle inside the interposer.
+   const double _t0q = MPI_Wtime() ;
    for (int r = 0; r < d->m_numRanks; ++r) {
       MPI_Aint sz ;
       int disp ;
@@ -44,6 +52,7 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
       }
       if (r != myRank && d->d_peerRecv[r] == NULL) ++nFallback ;
    }
+   g_phasePeerQueryMs = (MPI_Wtime() - _t0q) * 1000.0 ;
    if (myRank == 0 && nFallback > 0) {
       printf("mpiwrap: %d of %d peers not IPC-reachable, using MPI "
              "send/recv fallback for them\n", nFallback,

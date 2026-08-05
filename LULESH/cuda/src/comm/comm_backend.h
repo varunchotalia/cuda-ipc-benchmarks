@@ -30,6 +30,23 @@
 // backend; the one-sided backends switch on after it completes.
 extern bool g_commActive ;
 
+/* Lifecycle phase accounting (E2a). Defined in lulesh.cu, reported as PHASE_*
+   lines at the end of the run.
+
+   g_phaseCommSetupMs is measured in lulesh.cu around the single
+   commAllocRecv() call, so it is uniform across ALL backends: whatever a
+   backend needs to become ready to exchange halos is charged to it.
+
+   The two fields below are an OPTIONAL finer breakdown that only a
+   window-based backend can provide. A backend that sets them must ensure
+   they sum to no more than its share of setup; a backend that leaves them
+   at zero simply reports no breakdown, and only the uniform total is
+   comparable across backends. Currently only comm_mpiwrap.h fills them in. */
+extern double g_phaseCommSetupMs ;   /* all backends: whole commAllocRecv */
+extern double g_phaseCommFreeMs ;    /* all backends: whole commTeardown  */
+extern double g_phaseWinAllocMs ;    /* window construction only, or 0    */
+extern double g_phasePeerQueryMs ;   /* peer query / mapping only, or 0   */
+
 /* Mirrors the posting order of CommRecv() to compute the offset within rank
    recvRank's commDataRecv where the message arriving from direction
    (dCol,dRow,dPlane) -- the sender's position relative to the receiver --
