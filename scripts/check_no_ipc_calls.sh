@@ -58,10 +58,16 @@ BASE="-arch=sm_90 -O3 -DNDEBUG -DUSE_MPI -I$SRC $MPI_INC"
 #                compiler actually sees, useful for spotting accidental
 #                inclusion, but it is NOT a count of calls in the program.
 #
-# Mixing them is an easy way to put an inconsistent pair of numbers in a paper:
-# e.g. `direct` is 5 distinct field-write sites but 14 TU-summed (9 of those
-# being comm_ipc_packed.h's 3 sites seen in 3 TUs). Both are printed so the
-# distinction is impossible to miss.
+# Mixing them is an easy way to put an inconsistent pair of numbers in a paper.
+# `direct` is the worked example:
+#     8 distinct  = 5 in lulesh-comms-direct.cu (the field-write path)
+#                 + 3 in comm_ipc_packed.h (Mode B still uses the packed path
+#                   for MonoQ, whose transient pool allocations cannot be
+#                   premapped)
+#    14 TU-summed = 5 (one TU) + 9 (those same 3 header sites, seen in 3 TUs)
+# Note 5 is the field-write subtotal, NOT direct's distinct total -- quoting it
+# as the total is precisely the error these two columns exist to prevent.
+# Both are printed so the distinction is impossible to miss.
 #
 # NOTE ON THE PATH TEST: nvcc records repo headers with the *relative* path it
 # was given (e.g. comm/comm_ipc_common.h under -I.), and only system headers
