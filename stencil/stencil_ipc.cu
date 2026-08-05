@@ -174,11 +174,15 @@ int main(int argc, char** argv)
                          &d_ghost_recv_L, &win_recv_L);
         MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
                          &d_ghost_recv_R, &win_recv_R);
+        // Send-side buffers belong to this phase too: the comparators time all
+        // four of their halo buffers, so timing only the two windows here would
+        // understate the wrapper's halo setup and bias the comparison in its
+        // favour. The grids (d_old/d_new) stay outside, as in the comparators.
+        cudaMalloc(&d_ghost_send_L, ghost_size);
+        cudaMalloc(&d_ghost_send_R, ghost_size);
         t_win_alloc = MPI_Wtime() - _t0_alloc;
         MPI_Info_free(&ipc_info);
     }
-    cudaMalloc(&d_ghost_send_L, ghost_size);
-    cudaMalloc(&d_ghost_send_R, ghost_size);
 
     // Initialize
     cudaMemset(d_old, 0, grid_size);

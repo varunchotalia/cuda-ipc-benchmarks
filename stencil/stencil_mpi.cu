@@ -136,16 +136,24 @@ int main(int argc, char** argv)
         printf("Using MPI Send/Recv (not IPC)\n");
     }
 
-    // Allocate grids
+    // Allocate grids. NOT timed: all three variants allocate these two grids
+    // identically, so charging them to the setup phase would swamp the halo
+    // construction that actually differs between variants (the grids are
+    // ~2 GB each here, the halo buffers ~131 KB). Doing them first also pays
+    // any one-time allocator warmup outside the timed region, matching
+    // stencil_ipc.cu where the grids precede MPI_Win_allocate.
     double *d_old, *d_new;
-    MPI_Barrier(MPI_COMM_WORLD);              // align ranks before timing
-    const double _t0_alloc = MPI_Wtime();
     cudaMalloc(&d_old, grid_size);
     cudaMalloc(&d_new, grid_size);
 
-    // GPU buffers for pack/unpack (one per direction)
+    // Timed phase: halo-exchange buffer construction only -- the counterpart
+    // of the MPI_Win_allocate pair plus send buffers in stencil_ipc.cu.
+    // The host staging buffers are included because staging genuinely needs
+    // them; that is a real cost of this variant, not a timing artifact.
     double *d_send_buf_L, *d_send_buf_R;
     double *d_recv_buf_L, *d_recv_buf_R;
+    MPI_Barrier(MPI_COMM_WORLD);              // align ranks before timing
+    const double _t0_alloc = MPI_Wtime();
     cudaMalloc(&d_send_buf_L, ghost_size);
     cudaMalloc(&d_send_buf_R, ghost_size);
     cudaMalloc(&d_recv_buf_L, ghost_size);

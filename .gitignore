@@ -55,3 +55,8 @@ test_shm_win
 build_cmake_test/
 .verify_bin/
 build_*.log
+
+# compiled stencil binaries built at repo root
+/stencil_ipc
+/stencil_mpi
+/stencil_gpu_mpi
