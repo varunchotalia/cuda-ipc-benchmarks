@@ -12,6 +12,8 @@
 #define LULESH_COMM_DIRECT_H
 
 #include "comm_ipc_common.h"
+// Mode B still uses the handwritten packed path for MonoQ; see comm_ipc_packed.h
+#include "comm_ipc_packed.h"
 
 // Mode B keeps global-barrier synchronization: senders write into the
 // receiver's FIELD arrays, whose readiness is bounded by the receiver's
