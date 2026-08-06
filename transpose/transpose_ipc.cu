@@ -465,6 +465,15 @@ int main(int argc, char **argv)
 
     double t0 = 0.0;
 
+    /* CUDA-event instrumentation: pure GPU execution time of the communication
+       kernels (the cross-GPU transposed writes), excluding host-side MPI_Barrier
+       and launch latency. Lets us separate "GPU busy" from "waiting at barriers"
+       and confirm the wall-clock rate against actual device work. */
+    cudaEvent_t evc0, evc1;
+    CUDA_CHECK(cudaEventCreate(&evc0));
+    CUDA_CHECK(cudaEventCreate(&evc1));
+    double dev_comm_us = 0.0;   /* summed over timed iterations, this rank */
+
     for (int iter = 0; iter < warmup + iterations; iter++) {
 
         if (iter == warmup) {
@@ -485,11 +494,17 @@ int main(int argc, char **argv)
             CUDA_CHECK(cudaStreamSynchronize(stream));
             MPI_Barrier(MPI_COMM_WORLD);
 
+            CUDA_CHECK(cudaEventRecord(evc0, stream));
             transpose_all_peers_kernel<<<tgrd_all, tblk, 0, stream>>>(
                 peer_B_dev, order, colstart,
                 A_d, order, Bo, ACCUMULATE, my_ID, P);
+            CUDA_CHECK(cudaEventRecord(evc1, stream));
 
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            if (iter >= warmup) {
+                float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
+                dev_comm_us += (double)ms * 1.0e3;
+            }
             MPI_Barrier(MPI_COMM_WORLD);
         }
 #else
@@ -514,17 +529,29 @@ int main(int argc, char **argv)
                 }
 
                 if (ipc_ok_B[send_to]) {
+                    CUDA_CHECK(cudaEventRecord(evc0, stream));
                     transpose_kernel<<<tgrd, tblk, 0, stream>>>(
                         peer_B[send_to], order, colstart,
                         A_d, order, send_to * Bo,
                         Bo, ACCUMULATE);
+                    CUDA_CHECK(cudaEventRecord(evc1, stream));
                     CUDA_CHECK(cudaStreamSynchronize(stream));
+                    if (iter >= warmup) {
+                        float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
+                        dev_comm_us += (double)ms * 1.0e3;
+                    }
                 } else {
+                    CUDA_CHECK(cudaEventRecord(evc0, stream));
                     transpose_kernel<<<tgrd, tblk, 0, stream>>>(
                         fb_send, Bo, 0,
                         A_d, order, send_to * Bo,
                         Bo, 0);
+                    CUDA_CHECK(cudaEventRecord(evc1, stream));
                     CUDA_CHECK(cudaStreamSynchronize(stream));
+                    if (iter >= warmup) {
+                        float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
+                        dev_comm_us += (double)ms * 1.0e3;
+                    }
                     MPI_Isend(fb_send, blk_count, MPI_DOUBLE, send_to, phase,
                               MPI_COMM_WORLD, &reqs[nreq++]);
                 }
@@ -618,9 +645,21 @@ int main(int argc, char **argv)
     }
 
     /* --- Timing --- */
+    /* Symmetry with the start of the timed region (cudaDeviceSynchronize +
+       MPI_Barrier before t0): quiesce every GPU's in-flight work -- including
+       peer/direct NVLink writes issued into *other* ranks' buffers -- and
+       barrier all ranks before reading the stop clock. Without the barrier a
+       rank stops its clock the moment its own stream drains, which in
+       SINGLE_KERNEL/direct mode is long before the cross-GPU transpose is
+       globally complete; that (not real bandwidth) is what inflates the
+       reported single-kernel rate ~40x. */
+    CUDA_CHECK(cudaDeviceSynchronize());
+    MPI_Barrier(MPI_COMM_WORLD);
     double local_time = MPI_Wtime() - t0;
     double max_time;
     MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    double dev_comm_us_max;
+    MPI_Reduce(&dev_comm_us, &dev_comm_us_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     /* --- Verification --- */
     double *B_h = (double *)malloc(col_elems * sizeof(double));
@@ -657,12 +696,22 @@ int main(int argc, char **argv)
             double avgtime = max_time / (double)iterations;
             printf("Rate (MB/s): %lf  Avg time (s): %lf\n",
                    1.0e-06 * bytes / avgtime, avgtime);
+#if COMM_MODE == 0
+            /* Pure GPU comm-kernel time (CUDA events) vs wall time: the gap is
+               host-side MPI_Barrier / launch latency, not GPU work. */
+            double dev_us = dev_comm_us_max / (double)iterations;
+            printf("  [device] comm-kernel GPU time/iter: %.2f us   "
+                   "wall/iter: %.2f us   barrier+host overhead: %.2f us\n",
+                   dev_us, avgtime * 1.0e6, avgtime * 1.0e6 - dev_us);
+#endif
         } else {
             printf("ERROR: Per-element error %e exceeds threshold\n", abserr_per_elem);
         }
     }
 
     /* --- Cleanup --- */
+    CUDA_CHECK(cudaEventDestroy(evc0));
+    CUDA_CHECK(cudaEventDestroy(evc1));
     CUDA_CHECK(cudaStreamDestroy(stream));
 
 #if COMM_MODE == 0
