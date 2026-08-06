@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-"""LULESH README charts. Writes plots/lulesh_variants_sxm.png and
-plots/lulesh_modes_sxm.png.
+"""LULESH charts for the paper. Writes two single-column PDFs:
+
+    plots/lulesh_variants_sxm.pdf  all nine variants, ranked by elapsed
+    plots/lulesh_modes_sxm.pdf     the three send modes, handwritten vs interposed
+
+VARIANCE (E1). If results/lulesh_variance.csv exists it is used to draw
+min/max whiskers on the matched pairs in chart 2, and the bar becomes the
+median of the repetitions rather than a single run. Expected columns:
+    variant,rep,elapsed_s_hi
+one row per (variant, repetition) with no pre-aggregation. Absent the file the
+charts fall back to the single-run values in lulesh_results.csv and print a
+notice, so a missing variance file is visible rather than silent.
 
 All numbers are read from results/lulesh_results.csv -- nothing is hard-coded
 here, so the figures and the committed results file cannot drift apart.
@@ -19,9 +29,12 @@ it beats staged, so relegating it to an appendix is no longer justified.
 Palette: dataviz reference categorical slots, fixed order (validated set).
 Marks: thin bars, 2px surface gaps, recessive grid, text in ink tokens.
 """
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _paper_style import COL_W, use_paper_style, save  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 
 SURFACE = "#fcfcfb"
 INK     = "#0b0b0b"
@@ -31,13 +44,7 @@ GRID    = "#e4e3df"
 BLUE, GREEN, MAGENTA, YELLOW = "#2a78d6", "#008300", "#e87ba4", "#eda100"
 GREY = "#8a8a86"
 
-plt.rcParams.update({
-    "font.family": "DejaVu Sans",
-    "text.color": INK, "axes.labelcolor": INK2,
-    "xtick.color": INK2, "ytick.color": INK2,
-    "axes.edgecolor": GRID, "figure.facecolor": SURFACE,
-    "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-})
+use_paper_style()
 
 # ---- data: read from results/lulesh_results.csv (single source of truth) ----
 # Do not hard-code values here. The CSV carries node, command, environment,
@@ -87,80 +94,140 @@ MODE_LABEL = {
 }
 CAT_ORDER = ["B", "C", "A", "T", "W"]
 
+# ---- optional variance data from E1 (jobs 60796-60800) --------------------
+VAR_CSV = os.path.join(os.path.dirname(__file__), "..", "results",
+                       "lulesh_variance.csv")
+
+
+def load_variance(path=VAR_CSV):
+    """variant -> (median, min, max) over repetitions, or {} if unavailable."""
+    if not os.path.exists(path):
+        return {}
+    reps = {}
+    with open(path) as f:
+        rows = [ln for ln in f if not ln.startswith("#") and ln.strip()]
+    for r in csv.DictReader(rows):
+        reps.setdefault(r["variant"], []).append(float(r["elapsed_s_hi"]))
+    out = {}
+    for v, xs in reps.items():
+        xs.sort()
+        n = len(xs)
+        med = xs[n // 2] if n % 2 else 0.5 * (xs[n // 2 - 1] + xs[n // 2])
+        out[v] = (med, xs[0], xs[-1])
+    return out
+
+
+VAR = load_variance()
+if VAR:
+    print(f"variance: {len(VAR)} variants with repetitions -- "
+          "bars are medians, whiskers are min/max")
+else:
+    print("variance: results/lulesh_variance.csv absent -- single-run values, "
+          "no whiskers (rerun once E1 jobs 60796-60800 land)")
+
 # =============== chart 1: all nine variants ===============
-fig, ax = plt.subplots(figsize=(8.6, 5.5), dpi=160)
+fig, ax = plt.subplots(figsize=(COL_W, 3.3))
 names   = [v[0] for v in variants][::-1]
 times   = [v[2] for v in variants][::-1]
 gains   = [v[3] for v in variants][::-1]
 colors  = [MODE_COLOR[v[1]] for v in variants][::-1]
 
 bars = ax.barh(names, times, height=0.62, color=colors,
-               edgecolor=SURFACE, linewidth=2)
+               edgecolor=SURFACE, linewidth=1.0)
 for bar, t, g in zip(bars, times, gains):
-    lab = (f"{t:.3f} s   (baseline)" if g == 0.0
-           else f"{t:.3f} s   ({g*100:+.1f}% z/s)")
-    ax.text(bar.get_width() + 0.03, bar.get_y() + bar.get_height()/2, lab,
-            va="center", ha="left", fontsize=9.5, color=INK)
+    lab = f"{t:.3f} s" if g == 0.0 else f"{t:.3f} s ({g*100:+.1f}%)"
+    ax.text(bar.get_width() + 0.04, bar.get_y() + bar.get_height()/2, lab,
+            va="center", ha="left", fontsize=5.5, color=INK)
 
-ax.set_xlabel("elapsed (s) - lower is better", fontsize=10)
-ax.set_xlim(0, 2.85)
-ax.xaxis.grid(True, color=GRID, linewidth=0.8)
+ax.set_xlabel("elapsed (s) - lower is better")
+ax.set_xlim(0, 3.15)
+ax.xaxis.grid(True, color=GRID, linewidth=0.6)
 ax.set_axisbelow(True)
 for side in ("top", "right", "left"):
     ax.spines[side].set_visible(False)
-ax.tick_params(left=False, labelsize=10.5)
-ax.set_title("LULESH halo exchange - full sedov run, 8 ranks / 8x H200 SXM\n"
-             "(-s 45, 3145 iterations, default UCX transport selection)",
-             fontsize=11.5, color=INK, loc="left", pad=14)
+ax.tick_params(left=False)
+ax.set_title("LULESH halo exchange, 8 ranks / 8x H200 SXM\n"
+             "(-s 45, 3145 iterations, default UCX)",
+             color=INK, loc="left", pad=8)
 
 handles = [plt.Rectangle((0, 0), 1, 1, color=MODE_COLOR[c]) for c in CAT_ORDER]
 ax.legend(handles, [MODE_LABEL[c] for c in CAT_ORDER],
-          loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=3,
-          frameon=False, fontsize=9, labelcolor=INK2)
+          loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2,
+          frameon=False, labelcolor=INK2, handlelength=1.2,
+          columnspacing=1.0, labelspacing=0.3)
 fig.tight_layout()
-fig.savefig("plots/lulesh_variants_sxm.png", bbox_inches="tight")
-plt.close(fig)
+# PDF is the paper artifact; the PNG exists only because LULESH/cuda/README.md
+# embeds these two inline and GitHub cannot render a PDF. Emitting both from
+# the same run keeps the README image from drifting away from the data.
+fig.savefig("plots/lulesh_variants_sxm.png", dpi=200)
+save(fig, "plots/lulesh_variants_sxm.pdf")
 
 # =============== chart 2: the three send modes, ipc vs mpiwrap ===============
-fig, ax = plt.subplots(figsize=(7.4, 4.4), dpi=160)
-modes      = ["A\npack + copy\n+ unpack", "C\nremote-pack\n+ unpack",
-              "B\ndirect field writes\n(no pack, no unpack)"]
-ipc_times  = [DATA["ipc"]["elapsed"], DATA["ipc_rp"]["elapsed"],
-              DATA["direct"]["elapsed"]]
-wrap_times = [DATA["mpiwrap"]["elapsed"], DATA["mpiwrap_rp"]["elapsed"], None]
+fig, ax = plt.subplots(figsize=(COL_W, 2.7))
+modes      = ["A\npack + copy", "C\nremote-pack", "B\ndirect writes"]
+IPC_V  = ["ipc", "ipc_rp", "direct"]
+WRAP_V = ["mpiwrap", "mpiwrap_rp", None]
+
+
+def bar_value(v):
+    """Median over reps when variance data exists, else the single run."""
+    if v in VAR:
+        return VAR[v][0]
+    return DATA[v]["elapsed"]
+
+
+def err(v):
+    """[[lo],[hi]] whisker offsets from the plotted value, or None."""
+    if v not in VAR:
+        return None
+    med, lo, hi = VAR[v]
+    return [[med - lo], [hi - med]]
+
+
+ipc_times  = [bar_value(v) for v in IPC_V]
+wrap_times = [bar_value(v) for v in WRAP_V[:2]]
 
 x = range(3)
 w = 0.32
+EBAR = dict(ecolor=INK2, capsize=1.8, elinewidth=0.7, capthick=0.7)
 b1 = ax.bar([i - w/2 for i in x], ipc_times, width=w, color=BLUE,
-            edgecolor=SURFACE, linewidth=2, label="hand-written CUDA IPC")
-b2 = ax.bar([i + w/2 for i in x[:2]], wrap_times[:2], width=w, color=GREEN,
-            edgecolor=SURFACE, linewidth=2,
-            label="mpiwrap (MPI windows + LD_PRELOAD interposer)")
+            edgecolor=SURFACE, linewidth=1.0, label="hand-written CUDA IPC")
+for i, v in enumerate(IPC_V):
+    e = err(v)
+    if e:
+        ax.errorbar(i - w/2, ipc_times[i], yerr=e, fmt="none", **EBAR)
+b2 = ax.bar([i + w/2 for i in x[:2]], wrap_times, width=w, color=GREEN,
+            edgecolor=SURFACE, linewidth=1.0,
+            label="interposed MPI windows")
+for i, v in enumerate(WRAP_V[:2]):
+    e = err(v)
+    if e:
+        ax.errorbar(i + w/2, wrap_times[i], yerr=e, fmt="none", **EBAR)
 
 for bar, t in zip(b1, ipc_times):
-    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.3f} s",
-            ha="center", fontsize=9.5, color=INK)
-for bar, t in zip(b2, wrap_times[:2]):
-    ax.text(bar.get_x() + bar.get_width()/2, t + 0.035, f"{t:.3f} s",
-            ha="center", fontsize=9.5, color=INK)
+    ax.text(bar.get_x() + bar.get_width()/2, t + 0.05, f"{t:.3f}",
+            ha="center", fontsize=5.5, color=INK)
+for bar, t in zip(b2, wrap_times):
+    ax.text(bar.get_x() + bar.get_width()/2, t + 0.05, f"{t:.3f}",
+            ha="center", fontsize=5.5, color=INK)
 ax.text(2 + w/2, 0.55, "hand-written\nIPC only", ha="center",
-        va="center", fontsize=8.5, color=INK2, style="italic")
+        va="center", fontsize=5.5, color=INK2, style="italic")
 ax.set_xlim(-0.55, 2.62)
 
 ax.set_xticks(list(x))
-ax.set_xticklabels(modes, fontsize=9.5)
-ax.set_ylabel("elapsed (s) - lower is better", fontsize=10)
-ax.set_ylim(0, 1.95)
-ax.yaxis.grid(True, color=GRID, linewidth=0.8)
+ax.set_xticklabels(modes)
+ax.set_ylabel("elapsed (s) - lower is better")
+ax.set_ylim(0, 2.05)
+ax.yaxis.grid(True, color=GRID, linewidth=0.6)
 ax.set_axisbelow(True)
 for side in ("top", "right"):
     ax.spines[side].set_visible(False)
 ax.tick_params(bottom=False)
 ax.set_title("Matched CUDA IPC and interposed MPI-window paths\n"
-             "(job 60150, 8 ranks / 8x H200 SXM, -s 45, default UCX)",
-             fontsize=11.5, color=INK, loc="left", pad=14)
-ax.legend(loc="upper right", frameon=False, fontsize=9, labelcolor=INK2)
+             "(8 ranks / 8x H200 SXM, -s 45, default UCX)",
+             color=INK, loc="left", pad=8)
+ax.legend(loc="upper right", frameon=False, labelcolor=INK2,
+          handlelength=1.2, labelspacing=0.3)
 fig.tight_layout()
-fig.savefig("plots/lulesh_modes_sxm.png", bbox_inches="tight")
-plt.close(fig)
-print("wrote plots/lulesh_variants_sxm.png and plots/lulesh_modes_sxm.png")
+fig.savefig("plots/lulesh_modes_sxm.png", dpi=200)   # README embed, see above
+save(fig, "plots/lulesh_modes_sxm.pdf")
