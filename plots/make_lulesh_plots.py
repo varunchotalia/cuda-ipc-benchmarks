@@ -6,11 +6,21 @@
 
 VARIANCE (E1). If results/lulesh_variance.csv exists it is used to draw
 min/max whiskers on the matched pairs in chart 2, and the bar becomes the
-median of the repetitions rather than a single run. Expected columns:
-    variant,rep,elapsed_s_hi
-one row per (variant, repetition) with no pre-aggregation. Absent the file the
-charts fall back to the single-run values in lulesh_results.csv and print a
-notice, so a missing variance file is visible rather than silent.
+median of the repetitions rather than a single run. Build it with
+scripts/build_lulesh_variance_csv.py, which emits one row per (variant, job)
+with no pre-aggregation; only `variant` and `elapsed_s_hi` are read here, the
+rest are carried for provenance and for the paper's paired analysis.
+
+`rep` indexes the JOB SUBMISSION, not an in-process loop: run_lulesh_verify
+runs each variant once per job, so E1's five submissions give five independent
+runs per variant. `jobid` is carried alongside it so the paper's matched-pair
+residual (mpiwrap - ipc within a job) can be formed explicitly rather than by
+trusting that rep maps 1:1 onto a job -- the builder's --check-pairing asserts
+that it does.
+
+Absent the file the charts fall back to the single-run values in
+lulesh_results.csv and print a notice, so a missing variance file is visible
+rather than silent.
 
 All numbers are read from results/lulesh_results.csv -- nothing is hard-coded
 here, so the figures and the committed results file cannot drift apart.
