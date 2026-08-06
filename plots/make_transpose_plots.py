@@ -141,8 +141,16 @@ def panel(bucket, spec, title, path, ncol=1):
     ax.set_axisbelow(True)
     for side in ("top", "right"):
         ax.spines[side].set_visible(False)
-    ax.legend(loc="upper left", frameon=False, ncol=ncol,
-              handlelength=1.6, borderaxespad=0.2, labelspacing=0.25)
+    # Bottom-right, in an opaque white box. The box matters: the curves rise
+    # left-to-right, so the corner is the emptiest region, but the flat
+    # Staged MPI line runs along the bottom of the IPC panels and a
+    # transparent legend would sit ambiguously on top of it.
+    leg = ax.legend(loc="lower right", ncol=ncol, frameon=True,
+                    facecolor="white", edgecolor=GRID, framealpha=1.0,
+                    handlelength=1.6, borderaxespad=0.4, labelspacing=0.22,
+                    borderpad=0.4, columnspacing=1.0)
+    leg.get_frame().set_linewidth(0.5)
+    leg.set_zorder(5)
     fig.tight_layout()
     save(fig, path)
 
