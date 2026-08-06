@@ -127,11 +127,15 @@ VS_SERIES = [
 ]
 
 
-def panel(bucket, spec, title, path, ncol=1):
+def panel(bucket, spec, title, path, ncol=1, legend_only=None):
+    """legend_only: if given, only these labels get a legend entry.
+    The other series are still drawn, just not keyed."""
     fig, ax = plt.subplots(figsize=(COL_W, 2.55))
     for mode, label, colour, marker, ls in spec:
         xs, ys = series(bucket, mode)
-        ax.plot(xs, ys, ls, color=colour, marker=marker, label=label)
+        keyed = legend_only is None or label in legend_only
+        ax.plot(xs, ys, ls, color=colour, marker=marker,
+                label=label if keyed else "_nolegend_")
     ax.set_title(title)
     ax.set_ylabel("GB/s")
     ax.set_xlabel("Matrix size")
@@ -164,6 +168,10 @@ panel("accum", IPC_SERIES, "IPC — With Accumulation (B += A\u1d40)",
       os.path.join(OUT, "transpose_ipc_accum.pdf"))
 panel("noaccum", IPC_SERIES, "IPC — No Accumulation (B = A\u1d40)",
       os.path.join(OUT, "transpose_ipc_noaccum.pdf"))
-# seven series: two legend columns keep the box off the data
+# Only the NVSHMEM series are keyed here. The four IPC series use the same
+# colours and dash patterns as the two IPC panels, so they read across from
+# those; keying all seven made the box dominate the plot.
 panel("noaccum", VS_SERIES, "IPC vs NVSHMEM — No Accumulation",
-      os.path.join(OUT, "transpose_ipc_vs_nvshmem.pdf"), ncol=2)
+      os.path.join(OUT, "transpose_ipc_vs_nvshmem.pdf"), ncol=1,
+      legend_only={"NVSHMEM direct", "NVSHMEM single-K",
+                   "NVSHMEM buffered"})
