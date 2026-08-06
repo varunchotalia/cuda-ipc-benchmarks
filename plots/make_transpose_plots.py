@@ -109,9 +109,9 @@ def series(bucket, mode):
 
 # style: (source mode name, legend label, colour, marker, linestyle)
 IPC_SERIES = [
-    ("IPC direct (single-K)",  "Direct (single-kernel)", "#2ca02c", "o", "-"),
-    ("IPC direct (per-phase)", "Direct (per-phase)",     "#1f77b4", "s", "-"),
-    ("IPC buffered",           "Buffered",               "#d62728", "^", "--"),
+    ("IPC direct (single-K)",  "IPC direct (single-kernel)", "#2ca02c", "o", "-"),
+    ("IPC direct (per-phase)", "IPC direct (per-phase)",     "#1f77b4", "s", "-"),
+    ("IPC buffered",           "IPC buffered",              "#d62728", "^", "--"),
     ("GPU-aware MPI",          "GPU-aware MPI",          "#9467bd", "D", "-."),
     ("Staged MPI",             "Staged MPI",             "#8a8a86", "v", ":"),
 ]
@@ -123,7 +123,7 @@ VS_SERIES = [
     ("GPU-aware MPI",          "GPU-aware MPI",     "#9467bd", "D", "-."),
     ("NVSHMEM direct",         "NVSHMEM direct",    "#ff7f0e", "o", "--"),
     ("NVSHMEM single-K",       "NVSHMEM single-K",  "#eda100", "D", "--"),
-    ("NVSHMEM buffered",       "NVSHMEM buffered",  "#9a7fc9", "^", "--"),
+    ("NVSHMEM buffered",       "NVSHMEM buffered",  "#17a2b8", "^", "--"),
 ]
 
 
