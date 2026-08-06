@@ -134,6 +134,7 @@ def panel(bucket, spec, title, path, ncol=1):
         ax.plot(xs, ys, ls, color=colour, marker=marker, label=label)
     ax.set_title(title)
     ax.set_ylabel("GB/s")
+    ax.set_xlabel("Matrix size")
     ax.set_xticks(list(X))
     ax.set_xticklabels(SIZES)
     ax.set_ylim(bottom=0)
@@ -145,10 +146,14 @@ def panel(bucket, spec, title, path, ncol=1):
     # left-to-right, so the corner is the emptiest region, but the flat
     # Staged MPI line runs along the bottom of the IPC panels and a
     # transparent legend would sit ambiguously on top of it.
-    leg = ax.legend(loc="lower right", ncol=ncol, frameon=True,
-                    facecolor="white", edgecolor=GRID, framealpha=1.0,
-                    handlelength=1.6, borderaxespad=0.4, labelspacing=0.22,
-                    borderpad=0.4, columnspacing=1.0)
+    # Lifted off the axis floor: "lower right" alone puts the box on top of
+    # the flat Staged MPI series, which runs along the bottom of the IPC
+    # panels. bbox_to_anchor is in axes fractions, so this clears it at any
+    # y-limit rather than at one hard-coded data value.
+    leg = ax.legend(loc="lower right", bbox_to_anchor=(1.0, 0.16), ncol=ncol,
+                    frameon=True, facecolor="white", edgecolor=GRID,
+                    framealpha=1.0, handlelength=1.6, borderaxespad=0.4,
+                    labelspacing=0.22, borderpad=0.4, columnspacing=1.0)
     leg.get_frame().set_linewidth(0.5)
     leg.set_zorder(5)
     fig.tight_layout()

@@ -59,13 +59,13 @@ LBL = {"ipc": "Interposed", "gpu": "GPU-aware MPI", "stg": "Host-staged MPI"}
 RANK_C = {2: "#dcd0ec", 4: "#a97fc9", 8: "#6a3d9a"}
 
 # =============== figure 1: time, 4 GPUs ===============
-fig, ax = plt.subplots(figsize=(COL_W, 2.55))
+fig, ax = plt.subplots(figsize=(COL_W, 2.35))
 w = 0.27
 ax.bar(x - w, T[4]["ipc"], w, color=IPC_C, label=LBL["ipc"])
 ax.bar(x,     T[4]["gpu"], w, color=GPU_C, label=LBL["gpu"])
 ax.bar(x + w, T[4]["stg"], w, color=STG_C, label=LBL["stg"])
-ax.set_title("Stencil time (4 GPUs)")
 ax.set_ylabel("Time (ms)")
+ax.set_xlabel("Grid size")
 ax.set_xticks(x)
 ax.set_xticklabels(SIZES)
 ax.legend(loc="upper left", frameon=False, handlelength=1.4,
@@ -81,15 +81,15 @@ save(fig, "plots/stencil_time.pdf")
 # How much slower GPU-aware MPI is than the interposed path. Log y because the
 # values span 0.1%-75%: small grids are latency-bound and noisy, large grids
 # converge to parity. All values are plotted -- nothing is clipped.
-fig, ax = plt.subplots(figsize=(COL_W, 2.55))
+fig, ax = plt.subplots(figsize=(COL_W, 2.35))
 for i, np_ in enumerate((2, 4, 8)):
     d = [(g / p - 1.0) * 100.0 for p, g in zip(T[np_]["ipc"], T[np_]["gpu"])]
     ax.bar(x + (i - 1) * w, d, w, color=RANK_C[np_], label=f"{np_} GPUs")
 ax.axhline(1.0, color="#8a8a8a", ls=":", lw=0.9)
 ax.text(-0.48, 1.06, "1%", fontsize=5.5, color="#6a6a6a", ha="left")
 ax.set_yscale("log")
-ax.set_title("GPU-aware MPI overhead vs interposed")
 ax.set_ylabel("% slower than interposed (log scale)")
+ax.set_xlabel("Grid size")
 ax.set_xticks(x)
 ax.set_xticklabels(SIZES)
 ax.legend(loc="upper right", frameon=False, handlelength=1.4,

@@ -136,7 +136,7 @@ else:
           "no whiskers (rerun once E1 jobs 60796-60800 land)")
 
 # =============== chart 1: all nine variants ===============
-fig, ax = plt.subplots(figsize=(COL_W, 3.3))
+fig, ax = plt.subplots(figsize=(COL_W, 3.0))
 names   = [v[0] for v in variants][::-1]
 times   = [v[2] for v in variants][::-1]
 gains   = [v[3] for v in variants][::-1]
@@ -156,9 +156,6 @@ ax.set_axisbelow(True)
 for side in ("top", "right", "left"):
     ax.spines[side].set_visible(False)
 ax.tick_params(left=False)
-ax.set_title("LULESH halo exchange, 8 ranks / 8x H200 SXM\n"
-             "(-s 45, 3145 iterations, default UCX)",
-             color=INK, loc="left", pad=8)
 
 handles = [plt.Rectangle((0, 0), 1, 1, color=MODE_COLOR[c]) for c in CAT_ORDER]
 ax.legend(handles, [MODE_LABEL[c] for c in CAT_ORDER],
@@ -173,7 +170,7 @@ fig.savefig("plots/lulesh_variants_sxm.png", dpi=200)
 save(fig, "plots/lulesh_variants_sxm.pdf")
 
 # =============== chart 2: the three send modes, ipc vs mpiwrap ===============
-fig, ax = plt.subplots(figsize=(COL_W, 2.7))
+fig, ax = plt.subplots(figsize=(COL_W, 2.45))
 modes      = ["A\npack + copy", "C\nremote-pack", "B\ndirect writes"]
 IPC_V  = ["ipc", "ipc_rp", "direct"]
 WRAP_V = ["mpiwrap", "mpiwrap_rp", None]
@@ -239,9 +236,6 @@ ax.set_axisbelow(True)
 for side in ("top", "right"):
     ax.spines[side].set_visible(False)
 ax.tick_params(bottom=False)
-ax.set_title("Matched CUDA IPC and interposed MPI-window paths\n"
-             "(8 ranks / 8x H200 SXM, -s 45, default UCX)",
-             color=INK, loc="left", pad=8)
 ax.legend(loc="upper right", frameon=False, labelcolor=INK2,
           handlelength=1.2, labelspacing=0.3)
 fig.tight_layout()
