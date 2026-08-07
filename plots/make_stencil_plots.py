@@ -1,13 +1,23 @@
 #!/usr/bin/env python3
-"""Stencil figures for the paper. Writes two single-column PDFs:
+"""Stencil figures for the paper. Writes three single-column PDFs:
 
     plots/stencil_time.pdf      time, 4 GPUs, three modes
+    plots/stencil_speedup.pdf   speedup over host-staged MPI, 4 GPUs
     plots/stencil_overhead.pdf  GPU-aware MPI overhead vs interposed, 2/4/8 ranks
 
 The throughput panel of the previous three-panel composite is not emitted: it
 is the same measurement as the time panel (throughput is cells/time), so the
 two panels could not disagree and printing both spends a column restating one
 result. Time is kept because it is the quantity measured.
+
+The speedup panel exists because the time panel cannot show the small grids.
+Time spans 4 ms to 161 ms across the six sizes, so on a linear axis the
+32768² group sets the scale and the 1024²-4096² groups collapse into a few
+pixels -- exactly where the interposed-vs-GPU-aware gap is widest (2.4x vs
+1.9x over staged at 2048²). Normalising to host-staged MPI removes the
+size-dependent magnitude and puts every point in a 1.1-2.4 band, so all six
+sizes are readable at one scale. It is a re-plot of the same job-59853
+measurements as the time panel, not a new experiment.
 
 The overhead panel is a separate file rather than a composite member because
 it is descriptive -- the 2- and 8-rank points are not a controlled scaling
@@ -77,7 +87,41 @@ for side in ("top", "right"):
 fig.tight_layout()
 save(fig, "plots/stencil_time.pdf")
 
-# =============== figure 2: parity with GPU-aware MPI ===============
+# =============== figure 2: speedup over host-staged MPI, 4 GPUs ===============
+# Same job-59853 numbers as figure 1, divided by the host-staged time at the
+# same grid size. Bars start at 0 so the bar length is proportional to the
+# ratio it encodes; the dashed line at 1.0 is host-staged itself, drawn in the
+# same orange that series wears in figure 1 so the baseline is identifiable
+# without a third bar. Every bar is labelled -- twelve bars is few enough to
+# label them all, and reading the small grids is the entire reason this panel
+# exists.
+fig, ax = plt.subplots(figsize=(COL_W, 2.35))
+# bw, not w: figure 3 below reuses the w = 0.27 set for the three-series
+# figure 1, and rebinding it here silently widened those bars into each other.
+bw = 0.36
+SPEEDUP = {m: [s / v for s, v in zip(T[4]["stg"], T[4][m])] for m in ("ipc", "gpu")}
+for off, mode, colour in ((-bw / 2, "ipc", IPC_C), (bw / 2, "gpu", GPU_C)):
+    ax.bar(x + off, SPEEDUP[mode], bw * 0.94, color=colour, label=LBL[mode])
+    for xi, v in zip(x + off, SPEEDUP[mode]):
+        ax.text(xi, v + 0.03, f"{v:.2f}", ha="center", fontsize=5,
+                color="#3a3a3a")
+ax.axhline(1.0, color=STG_C, ls="--", lw=0.9, zorder=3,
+           label="Baseline: host-staged MPI")
+ax.set_ylabel("Speedup over host-staged MPI (×)")
+ax.set_xlabel("Grid size")
+ax.set_xticks(x)
+ax.set_xticklabels(SIZES)
+ax.set_ylim(0, max(max(v) for v in SPEEDUP.values()) * 1.16)
+ax.legend(loc="upper right", frameon=False, handlelength=1.4,
+          borderaxespad=0.2, labelspacing=0.25)
+ax.grid(True, axis="y", color=GRID, linewidth=0.6)
+ax.set_axisbelow(True)
+for side in ("top", "right"):
+    ax.spines[side].set_visible(False)
+fig.tight_layout()
+save(fig, "plots/stencil_speedup.pdf")
+
+# =============== figure 3: parity with GPU-aware MPI ===============
 # How much slower GPU-aware MPI is than the interposed path. Log y because the
 # values span 0.1%-75%: small grids are latency-bound and noisy, large grids
 # converge to parity. All values are plotted -- nothing is clipped.
@@ -110,3 +154,12 @@ for np_ in (2, 4, 8):
     d = [(g / p - 1.0) * 100.0 for p, g in zip(T[np_]["ipc"], T[np_]["gpu"])]
     print(f"np={np_} GPU-aware vs interposed: " +
           ", ".join(f"{s}={v:+.1f}%" for s, v in zip(SIZES, d)))
+
+# Speedup over host-staged at every rank count, for the text. Only np=4 is
+# plotted, but the 2- and 8-rank columns are what justify calling the range
+# "1.1x to 1.9x" in the results file, so print them too.
+for np_ in (2, 4, 8):
+    for mode in ("ipc", "gpu"):
+        sp = [s / v for s, v in zip(T[np_]["stg"], T[np_][mode])]
+        print(f"np={np_} {LBL[mode]:>14s} vs host-staged: " +
+              ", ".join(f"{s}={v:.2f}x" for s, v in zip(SIZES, sp)))
