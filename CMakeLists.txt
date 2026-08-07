@@ -8,7 +8,7 @@ endif()
 project(cuda-ipc-benchmarks LANGUAGES CXX CUDA)
 
 # ---------------------------------------------------------------------------
-# One-command build of everything: the mpiwrap interposer, the transpose and
+# One-command build of everything: the WinIPC interposer, the transpose and
 # stencil benchmarks, and all LULESH halo-exchange variants.
 #
 #   cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100    # GB200/NVL72 (sm_100)
@@ -36,7 +36,10 @@ else()
   message(STATUS "NVSHMEM_HOME not set: skipping NVSHMEM targets")
 endif()
 
-# ----- mpiwrap interposer ---------------------------------------------------
+# ----- WinIPC interposer ----------------------------------------------------
+# The target, the source file and the .so are still spelled `mpiwrap` (the
+# pre-rebrand name): queued Slurm jobs name them, and Slurm freezes a job's
+# script text at submit time, so renaming them would break jobs in flight.
 # Plain C++ (never nvcc: it drags in libnvomp, which breaks LD_PRELOAD).
 # Driver API linked for the multi-node NVLink fabric-handle path.
 add_library(mpiwrap SHARED mpi-intercept/mpiwrap_ipc.cc)

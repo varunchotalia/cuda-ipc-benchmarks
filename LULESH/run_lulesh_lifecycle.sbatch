@@ -11,7 +11,7 @@
 #                          comparable setup number.
 #   PHASE_WIN_ALLOCATE_ms  breakdown: MPI_Win_allocate only. Window-based
 #                          backends only; 0.0000 means NO BREAKDOWN
-#                          AVAILABLE, not "free". Currently only mpiwrap*.
+#                          AVAILABLE, not "free". Currently only WinIPC.
 #   PHASE_PEER_QUERY_ms    breakdown: the MPI_Win_shared_query loop (each
 #                          query triggers at most one cudaIpcOpenMemHandle).
 #   PHASE_COMM_FREE_ms     whole commTeardown().
@@ -64,7 +64,7 @@ echo "NODE: $(hostname)  date=$(date -Is)  UCX_TLS=${UCX_TLS:-<unset>}"
 echo "=================================================================="
 
 # Build the interposer from source first and record its md5 -- sets
-# MPIWRAP_LIB. See scripts/build_mpiwrap.sh for why this is not optional.
+# MPIWRAP_LIB (WinIPC). See scripts/build_mpiwrap.sh for why it is not optional.
 source $REPO/scripts/build_mpiwrap.sh
 
 cd $REPO/LULESH/cuda/src

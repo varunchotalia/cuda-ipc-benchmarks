@@ -49,8 +49,9 @@ build/direct/%.o: %.cu $(HDRS) | build/direct
 lulesh_direct: $(OBJS_DIRECT)
 	$(NVCC) $(ARCH) $(OBJS_DIRECT) $(LDFLAGS) -o $@
 
-# ---- mpiwrap variant (MPI windows over device memory; CUDA IPC supplied ----
-# ---- by LD_PRELOAD=libmpiwrap.so at run time)                           ----
+# ---- WinIPC variant (MPI windows over device memory; CUDA IPC supplied ----
+# ---- by LD_PRELOAD=libmpiwrap.so at run time). Target/binary names keep ----
+# ---- the pre-rebrand `mpiwrap` spelling: queued Slurm jobs name them.   ----
 OBJS_MPIWRAP = $(patsubst %.cu,build/mpiwrap/%.o,$(SRCS_BASE))
 mpiwrap: lulesh_mpiwrap
 build/mpiwrap:

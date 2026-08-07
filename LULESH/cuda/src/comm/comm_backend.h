@@ -41,7 +41,7 @@ extern bool g_commActive ;
    window-based backend can provide. A backend that sets them must ensure
    they sum to no more than its share of setup; a backend that leaves them
    at zero simply reports no breakdown, and only the uniform total is
-   comparable across backends. Currently only comm_mpiwrap.h fills them in. */
+   comparable across backends. Currently only WinIPC (comm_mpiwrap.h) does. */
 extern double g_phaseCommSetupMs ;   /* all backends: whole commAllocRecv */
 extern double g_phaseCommFreeMs ;    /* all backends: whole commTeardown  */
 extern double g_phaseWinAllocMs ;    /* window construction only, or 0    */

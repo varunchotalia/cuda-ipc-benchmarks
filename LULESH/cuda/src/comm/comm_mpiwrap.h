@@ -1,4 +1,6 @@
-// comm_mpiwrap.h -- CUDA IPC through the mpiwrap interceptor.
+// comm_mpiwrap.h -- CUDA IPC through the WinIPC interceptor (was: mpiwrap;
+// the file name, the .so and the IPC_VIA_MPIWRAP macro keep the old spelling
+// because queued Slurm jobs reference them).
 // The application only speaks portable MPI window code: MPI_Win_allocate
 // (info key cuda_ipc=1) for the device recv buffer + MPI_Win_shared_query
 // per peer.  Vanilla MPI cannot shared_query such a window; libmpiwrap.so
@@ -58,7 +60,7 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
       including cross-node ones, is served by the window -- without it a
       clean run leaves no record of which transport was measured. */
    if (myRank == 0) {
-      printf("mpiwrap: %d of %d peers not IPC-reachable, using MPI "
+      printf("winipc: %d of %d peers not IPC-reachable, using MPI "
              "send/recv fallback for them\n", nFallback,
              (int)d->m_numRanks - 1) ;
    }

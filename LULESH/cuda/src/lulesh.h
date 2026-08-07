@@ -306,7 +306,7 @@ typedef Real_t& (Domain::* Domain_member )(Index_t) ;
 #define CACHE_ALIGN_REAL(n) \
    (((n) + (CACHE_COHERENCE_PAD_REAL - 1)) & ~(CACHE_COHERENCE_PAD_REAL-1))
 
-// One halo-exchange backend (staged / gpumpi / shmwin / ipc / mpiwrap /
+// One halo-exchange backend (staged / gpumpi / shmwin / ipc / WinIPC /
 // nvshmem) is selected at compile time; see comm/comm_backend.h.
 #include "comm/comm_backend.h"
 

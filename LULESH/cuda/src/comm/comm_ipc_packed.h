@@ -4,7 +4,7 @@
 // comm_ipc.h (Mode A/C) and comm_direct.h (Mode B, for the MonoQ path).
 //
 // WHY THE SPLIT EXISTS -- do not merge this back.
-// comm_mpiwrap.h establishes the same d_peerRecv[] mapping through
+// WinIPC (comm_mpiwrap.h) establishes the same d_peerRecv[] mapping through
 // MPI_Win_allocate + MPI_Win_shared_query and never calls these functions.
 // While they lived in comm_ipc_common.h, which comm_mpiwrap.h includes for
 // the shared token/steady-state machinery, they were still textually present

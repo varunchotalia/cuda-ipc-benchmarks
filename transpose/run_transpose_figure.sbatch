@@ -45,7 +45,7 @@
 #
 # Also fixed here: this job used to LD_PRELOAD a hardcoded ~/mpiwrap/
 # libmpiwrap.so, which is the stale 2026-05-04 hand-built copy -- three months
-# behind mpi-intercept/mpiwrap_ipc.cc. Now built from source in-job via
+# behind the WinIPC source, mpi-intercept/mpiwrap_ipc.cc. Now built in-job via
 # scripts/build_mpiwrap.sh, same as the LULESH harnesses, with its md5 in the
 # log. See that script's header for why this is not optional.
 

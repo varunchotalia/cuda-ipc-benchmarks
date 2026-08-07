@@ -13,8 +13,8 @@
 # DEVICE pointers to MPI: gpumpi always, and ipc/ipc_rp for every peer whose
 # cudaIpcOpenMemHandle could not be opened -- which on 4-GPU nodes is ~23 of
 # an interior domain's 26 neighbours, since cudaIpc handles never cross a
-# node.  The variants that survived (staged, mpiwrap) are exactly those that
-# never do: staged uses host buffers, mpiwrap serves every peer including
+# node.  The variants that survived (staged, WinIPC) are exactly those that
+# never do: staged uses host buffers, WinIPC serves every peer including
 # cross-node ones from the fabric window.
 #
 # staged vs gpumpi is already a controlled single-variable comparison --

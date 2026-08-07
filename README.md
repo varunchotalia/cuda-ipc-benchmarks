@@ -2,6 +2,17 @@
 
 Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVIDIA H200 GPUs (NVLink).
 
+> **Naming.** The MPI-window interposer and its halo-exchange backend are now
+> called **WinIPC**; they were previously called *mpiwrap*. The rename is
+> complete in prose, figures and comments. It is **not** yet applied to
+> filenames or build identifiers — `libmpiwrap.so`, `mpi-intercept/mpiwrap_ipc.cc`,
+> `LULESH/cuda/src/comm/comm_mpiwrap.h`, `scripts/build_mpiwrap.sh`, the
+> `mpiwrap`/`mpiwrap_rp` make targets, the `lulesh_mpiwrap*` binaries, the
+> `IPC_VIA_MPIWRAP` macro and the `$MPIWRAP_LIB` variable all keep their old
+> spelling, because Slurm freezes a job's script text at submit time and queued
+> jobs still reference them. Read `mpiwrap` as WinIPC wherever it appears as an
+> identifier.
+
 ## Structure
 
 ```
@@ -22,7 +33,7 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │   ├── run_lulesh_verify.sbatch       # all 9 binaries, full run, energy cross-check
 │   └── omp_4.0/ openacc/ stdpar/      # unmodified upstream LULESH variants
 │
-├── mpi-intercept/                  # MPI interposer library for transparent CUDA IPC
+├── mpi-intercept/                  # WinIPC: MPI interposer for transparent CUDA IPC
 │   ├── mpiwrap_ipc.cc                 # Intercepts MPI_Win_create/allocate/shared_query/free;
 │   │                                  #   CUDA IPC on-node, CUDA fabric handles across NVLink nodes
 │   ├── test_ipc_win.cu                # Standalone interposer sanity check (see root CMakeLists.txt)
@@ -33,7 +44,7 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │   ├── transpose_benchmark_ipc_nvshmem.png
 │   ├── transpose_stencil_comparison.png
 │   ├── lulesh_variants_sxm.png        # LULESH: all defensible variants
-│   └── lulesh_modes_sxm.png           # LULESH: send modes, ipc vs mpiwrap
+│   └── lulesh_modes_sxm.png           # LULESH: send modes, ipc vs WinIPC
 │
 ├── results/                        # Tabulated benchmark data
 │   ├── transpose_results.md
@@ -67,7 +78,7 @@ mix transports inside one kernel launch, so it aborts with a clear
 message if any peer is unreachable, instead.
 
 Known limitation: the fallback assumes IPC reachability is *symmetric*
-per GPU pair, and (like the rest of the IPC/mpiwrap family) it requires
+per GPU pair, and (like the rest of the IPC/WinIPC family) it requires
 a working CUDA-aware MPI to actually send the fallback messages — see
 [LULESH/cuda/README.md](LULESH/cuda/README.md#the-six-variants) for the
 full explanation.
@@ -75,8 +86,8 @@ full explanation.
 ## LULESH
 
 `LULESH/cuda` is LLNL's CUDA LULESH with the halo exchange refactored into
-six pluggable backends (staged / gpumpi / shmwin / ipc / mpiwrap / nvshmem)
-plus three send modes for the IPC/mpiwrap family (pack+copy, remote-pack,
+six pluggable backends (staged / gpumpi / shmwin / ipc / WinIPC / nvshmem)
+plus three send modes for the IPC/WinIPC family (pack+copy, remote-pack,
 direct field writes). One binary per variant; all reproduce the staged
 baseline's reported Final Origin Energy on the full sedov run. See
 [LULESH/cuda/README.md](LULESH/cuda/README.md) for the variant/mode tables,
@@ -134,7 +145,7 @@ On a multi-node NVLink system the interposer logs `fabric window: N ranks
 ...` when the CUDA fabric-handle path (requires the IMEX daemon) is active;
 `N of M peers not IPC-reachable` means it degraded to per-peer hybrid
 IPC+MPI instead. transpose and stencil use `MPI_Win_allocate`, so their IPC
-modes ride the same interposer transports as LULESH's mpiwrap variants.
+modes ride the same interposer transports as LULESH's WinIPC variants.
 The Makefile instructions below remain valid for per-benchmark builds.
 
 ### Build the MPI interposer library

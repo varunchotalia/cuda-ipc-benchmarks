@@ -13,7 +13,7 @@ init and window construction. reps are numbered by ascending jobid, so rep 1 is
 the lowest-numbered job.
 
 WHY jobid AND node ARE COLUMNS. The paper forms the matched-pair residual as
-mpiwrap - ipc *within a job*, so job and node effects cancel. Because rep maps
+WinIPC - ipc *within a job*, so job and node effects cancel. Because rep maps
 1:1 onto a submission, pairing by rep is equivalent to pairing within a job --
 but that equivalence should be checkable rather than trusted, so both the jobid
 and the node are carried per row. Pair on jobid if you want to be explicit;
@@ -138,7 +138,7 @@ def report_pairs(rows):
 
     This is the quantity the paper reports. Taking the difference inside one
     job cancels whatever that job saw -- node, co-tenants, thermal state --
-    which two independent marginals (mean mpiwrap vs mean ipc) would not.
+    which two independent marginals (mean WinIPC vs mean ipc) would not.
     """
     idx = {}
     for r in rows:

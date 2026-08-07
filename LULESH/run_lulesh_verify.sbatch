@@ -32,7 +32,8 @@ export UCX_LOG_LEVEL=error
 # Build the interposer from source rather than trusting the checked-out
 # artifact. The .so is gitignored, so the tree can carry a binary built from
 # anything -- two hand-built copies had already drifted apart, and different
-# harnesses loaded different ones. build_mpiwrap.sh exports MPIWRAP_LIB and
+# harnesses loaded different ones. build_mpiwrap.sh builds WinIPC, exports
+# MPIWRAP_LIB and
 # prints the build's provenance (md5 + interposed symbol list) into this job's
 # log, so "which binary produced this number" is answerable afterwards.
 # It must run BEFORE the variant loop so a compile error costs a minute

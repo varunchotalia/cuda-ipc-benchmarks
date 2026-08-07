@@ -1,11 +1,17 @@
-// mpiwrap_ipc.cc - MPI interception for CUDA IPC
+// mpiwrap_ipc.cc - WinIPC: MPI interception for CUDA IPC
+//
+// (Formerly "mpiwrap". This file name, the built .so and the CMake target keep
+// the old spelling for now -- queued Slurm jobs reference them by name.)
 //
 // Intercepts MPI_Win_create/allocate/shared_query/free to add CUDA IPC support.
 // Use with: LD_PRELOAD=./libmpiwrap.so mpirun ...
 //
-// MPIWRAP_DISABLE_FABRIC=1 forces cross-node windows onto the per-peer
+// WINIPC_DISABLE_FABRIC=1 forces cross-node windows onto the per-peer
 // hybrid-MPI fallback even on fabric-capable (NVL72-class) hardware --
 // useful for an apples-to-apples fabric-vs-no-fabric comparison.
+// MPIWRAP_DISABLE_FABRIC is still honoured as a deprecated alias, so an
+// already-submitted job or a collaborator's script does not silently lose the
+// setting and run WITH fabric when it meant to run without.
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +21,7 @@
 #include <cuda_runtime_api.h>
 #include <cuda.h>
 
-#define LOG(fmt, ...) fprintf(stderr, "[mpiwrap] " fmt "\n", ##__VA_ARGS__)
+#define LOG(fmt, ...) fprintf(stderr, "[winipc] " fmt "\n", ##__VA_ARGS__)
 
 // ============================================================================
 // WINDOW METADATA
@@ -81,7 +87,10 @@ static bool ranks_span_nodes(MPI_Comm comm) {
 static bool fabric_supported() {
     // Lets a benchmark force the per-peer hybrid-MPI path even on hardware
     // that supports fabric handles, e.g. to compare against the fabric path.
-    const char* disable = getenv("MPIWRAP_DISABLE_FABRIC");
+    // MPIWRAP_DISABLE_FABRIC is the pre-rebrand name, still honoured: dropping
+    // it would turn a stale script into a silent fabric-ON run.
+    const char* disable = getenv("WINIPC_DISABLE_FABRIC");
+    if (!disable) disable = getenv("MPIWRAP_DISABLE_FABRIC");
     if (disable && disable[0] == '1') return false;
     if (cuInit(0) != CUDA_SUCCESS) return false;
     int curdev = 0;

@@ -8,7 +8,7 @@
 # Three numbers the figure needs:
 #   handwritten setup+teardown   comm_ipc_packed.h : commIpcAllocAndMapPacked
 #                                                  + commIpcUnmapAndFreePacked
-#   interposed  setup+teardown   comm_mpiwrap.h    : commAllocRecv + commTeardown
+#   WinIPC      setup+teardown   comm_mpiwrap.h    : commAllocRecv + commTeardown
 #   shared steady state          comm_ipc_common.h : token protocol + transfer
 #                                                    machinery, identical for both
 #
