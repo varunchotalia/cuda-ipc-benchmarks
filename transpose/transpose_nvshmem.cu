@@ -443,6 +443,14 @@ int main(int argc, char **argv)
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
                 B_sym, order, recv_from * Bo, recv_buf, Bo, ACCUMULATE);
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            /* recv_buf is single-buffered and reused every phase, so the next
+               phase's putmem into a peer's recv_buf must not start before that
+               peer has finished unpacking this phase's contents. Without this
+               the exchange is racy at scale (validation failed at 32 PEs on
+               GB200 NVL72, passed at 16). The IPC buffered comparator in
+               transpose_ipc.cu pays the same post-unpack barrier, so this
+               keeps the two apples-to-apples. */
+            nvshmem_barrier_all();
 #endif
         }
 #endif

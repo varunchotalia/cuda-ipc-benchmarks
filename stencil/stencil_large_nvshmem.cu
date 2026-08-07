@@ -231,6 +231,23 @@ int main(int argc, char** argv)
     double weight = 0.25;
     int iterations = 100;
 
+    // Untimed warmup iterations (STENCIL_WARMUP, default 0), matching
+    // stencil_ipc.cu / stencil_mpi.cu / stencil_gpu_mpi.cu exactly: same env
+    // var, same default, same total iteration count (warmup + iterations), so
+    // the four variants stay comparable and their L2 norms stay identical at a
+    // given warmup. Without this the NVSHMEM column could not be run under the
+    // same warmup as the others; see results/stencil_results.txt.
+    int warmup = 0;
+    {
+        const char* w = getenv("STENCIL_WARMUP");
+        if (w && *w) {
+            char* end = NULL;
+            long v = strtol(w, &end, 10);
+            if (end != w && v > 0) warmup = (int)v;
+        }
+    }
+    if (mype == 0) printf("Warmup iterations (untimed): %d\n", warmup);
+
     // ------------------------------------------------------------------------
     // Main loop
     // ------------------------------------------------------------------------
@@ -239,9 +256,15 @@ int main(int argc, char** argv)
     cudaEvent_t ev_start, ev_stop;
     cudaEventCreate(&ev_start);
     cudaEventCreate(&ev_stop);
-    cudaEventRecord(ev_start, stream);
 
-    for (int iter = 0; iter < iterations; iter++) {
+    for (int iter = 0; iter < warmup + iterations; iter++) {
+
+        // Start the clock only once the warmup iterations are done.
+        if (iter == warmup) {
+            cudaStreamSynchronize(stream);
+            nvshmem_barrier_all();
+            cudaEventRecord(ev_start, stream);
+        }
 
         // === GHOST EXCHANGE ===
 
