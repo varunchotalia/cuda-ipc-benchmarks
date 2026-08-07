@@ -16,7 +16,7 @@
 static inline void commAllocRecv(Domain* d, Index_t comBufSize)
 {
    d->commDataRecv = new Real_t[comBufSize] ;
-   cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0) ;
+   COMM_CUDA_OK(cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0)) ;
 
    int myRank ;
    MPI_Comm_rank(MPI_COMM_WORLD, &myRank) ;
@@ -53,7 +53,11 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
       if (r != myRank && d->d_peerRecv[r] == NULL) ++nFallback ;
    }
    g_phasePeerQueryMs = (MPI_Wtime() - _t0q) * 1000.0 ;
-   if (myRank == 0 && nFallback > 0) {
+   /* Printed unconditionally: the transport mix is what the numbers mean.
+      "0 of N not IPC-reachable" is the positive statement that every peer,
+      including cross-node ones, is served by the window -- without it a
+      clean run leaves no record of which transport was measured. */
+   if (myRank == 0) {
       printf("mpiwrap: %d of %d peers not IPC-reachable, using MPI "
              "send/recv fallback for them\n", nFallback,
              (int)d->m_numRanks - 1) ;

@@ -11,7 +11,7 @@
 static inline void commAllocRecv(Domain* d, Index_t comBufSize)
 {
    d->commDataRecv = new Real_t[comBufSize] ;
-   cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0) ;
+   COMM_CUDA_OK(cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0)) ;
 
    // nvshmem_malloc is collective and needs the same size on every PE;
    // boundary ranks have smaller comBufSize, so use the global max.

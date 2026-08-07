@@ -40,10 +40,10 @@ static inline void commAllocRecv(Domain* d, Index_t comBufSize)
    MPI_Win_shared_query(d->shmWin, d->m_numRanks-1, &lastSz, &lastDisp,
                         (void **)&lastBase) ;
    size_t segBytes = (char *)lastBase + lastSz - (char *)d->peerRecv[0] ;
-   cudaHostRegister(d->peerRecv[0], segBytes, 0) ;
+   COMM_CUDA_OK(cudaHostRegister(d->peerRecv[0], segBytes, 0)) ;
    MPI_Win_lock_all(MPI_MODE_NOCHECK, d->shmWin) ;
 
-   cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t)) ;
+   COMM_CUDA_OK(cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t))) ;
 }
 
 static inline void commTeardown(Domain* d, int myRank)

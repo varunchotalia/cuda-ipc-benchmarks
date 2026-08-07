@@ -29,7 +29,15 @@ export NVSHMEM_BOOTSTRAP=MPI
 # lazy-connection penalty for CUDA-aware MPI. UCX defaults are authoritative.
 export UCX_LOG_LEVEL=error
 
-MPIWRAP_LIB=/lustre/nvwulf/home/vchotalia/mpiwrap/mpi-intercept/libmpiwrap.so
+# Build the interposer from source rather than trusting the checked-out
+# artifact. The .so is gitignored, so the tree can carry a binary built from
+# anything -- two hand-built copies had already drifted apart, and different
+# harnesses loaded different ones. build_mpiwrap.sh exports MPIWRAP_LIB and
+# prints the build's provenance (md5 + interposed symbol list) into this job's
+# log, so "which binary produced this number" is answerable afterwards.
+# It must run BEFORE the variant loop so a compile error costs a minute
+# instead of the whole slot.
+source ~/mpiwrap/scripts/build_mpiwrap.sh
 
 cd ~/mpiwrap/LULESH/cuda/src
 make -j8 all
