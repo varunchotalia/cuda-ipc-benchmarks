@@ -36,7 +36,7 @@ int main(int argc, char** argv)
     
     if (rank == 0) fprintf(stderr, "Buffer: %.0f MB\n", bytes / 1e6);
     
-    // Create MPI window (intercepted by mpiwrap_ipc)
+    // Create MPI window (intercepted by WinIPC, mpiwrap_ipc.cc)
     MPI_Win win;
     MPI_Win_create(d_buf, bytes, 1, MPI_INFO_NULL, MPI_COMM_WORLD, &win);
     

@@ -1,5 +1,9 @@
 #!/bin/bash
-# Build the interposer from source and print its provenance.
+# Build the WinIPC interposer from source and print its provenance.
+#
+# The script name, the .so and the CMake target keep the pre-rebrand `mpiwrap`
+# spelling: queued Slurm jobs source this path and use $MPIWRAP_LIB by name,
+# and Slurm freezes a job's script text at submit time.
 #
 # Source this (or run it) as the FIRST step of any job that LD_PRELOADs the
 # interposer, then use $MPIWRAP_LIB. Two reasons:

@@ -30,8 +30,8 @@
 #    CUDA fabric-handle path (multi-node NVLink) is active; "N of M peers
 #    not IPC-reachable" means it fell back to per-peer hybrid MPI instead
 #  - LULESH: Final Origin Energy must match staged at every rank count
-#  - section 4/4 repeats LULESH mpiwrap/mpiwrap_rp with the fabric path
-#    forced off (MPIWRAP_DISABLE_FABRIC=1), for a fabric-vs-hybrid-MPI
+#  - section 4/4 repeats the LULESH WinIPC variants with the fabric path
+#    forced off (WINIPC_DISABLE_FABRIC=1), for a fabric-vs-hybrid-MPI
 #    apples-to-apples comparison at the same rank counts
 #
 # Rank counts need one MPI rank per GPU, and the job allocation must
@@ -210,6 +210,7 @@ done
 echo "======================================================================"
 echo "3/4 LULESH at ${RANKS_LIST} ranks, -s $LULESH_SIZE per rank"
 echo "  inter-node capable: staged gpumpi ipc ipc_rp mpiwrap mpiwrap_rp nvshmem"
+echo "  (mpiwrap/mpiwrap_rp are the WinIPC variants; targets keep the old name)"
 echo "  (shmwin and direct are single-node by construction and are skipped)"
 echo "======================================================================"
 VARIANTS="staged gpumpi ipc ipc_rp mpiwrap mpiwrap_rp"
@@ -248,8 +249,8 @@ done
 
 echo ""
 echo "======================================================================"
-echo "4/4 LULESH mpiwrap/mpiwrap_rp with the fabric path forced OFF"
-echo "  (MPIWRAP_DISABLE_FABRIC=1: cross-node peers fall back to real MPI"
+echo "4/4 LULESH WinIPC (mpiwrap/mpiwrap_rp) with the fabric path forced OFF"
+echo "  (WINIPC_DISABLE_FABRIC=1: cross-node peers fall back to real MPI"
 echo "   send/recv, same as running on hardware with no fabric support)"
 echo "======================================================================"
 declare -A NOFABRIC_ELAPSED
@@ -257,8 +258,13 @@ for N in $RANKS_LIST; do
     echo ""
     echo "########## $N ranks, fabric disabled ##########"
     for V in mpiwrap mpiwrap_rp; do
-        echo "--- lulesh_$V, $N ranks, MPIWRAP_DISABLE_FABRIC=1 ---"
-        $LAUNCH $N env LD_PRELOAD=$MPIWRAP_LIB MPIWRAP_DISABLE_FABRIC=1 \
+        echo "--- lulesh_$V, $N ranks, WINIPC_DISABLE_FABRIC=1 ---"
+        # Both spellings: an interposer built before the WinIPC rebrand only
+        # knows MPIWRAP_DISABLE_FABRIC, and an unrecognised name fails
+        # SILENTLY -- the run would keep the fabric path on and the
+        # comparison would be vacuous rather than obviously broken.
+        $LAUNCH $N env LD_PRELOAD=$MPIWRAP_LIB \
+            WINIPC_DISABLE_FABRIC=1 MPIWRAP_DISABLE_FABRIC=1 \
             ./$BUILD/lulesh_$V -s $LULESH_SIZE 2>&1 | tee run.tmp \
             || echo "FAILED: lulesh_$V (no fabric) at $N ranks"
         NOFABRIC_ELAPSED[${V}_${N}]=$(awk '/Elapsed time/{print $4}' run.tmp)

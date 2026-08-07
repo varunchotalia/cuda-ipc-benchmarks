@@ -12,7 +12,7 @@
 #   1. False positive. LULESH/cuda/src/lulesh.h mentions cudaIpc in a *comment*
 #      inside #ifdef COMM_IPC, and the wrapper build compiles through that
 #      block. A naive `grep cudaIpc *.h *.cu` therefore reports a hit for the
-#      mpiwrap target, and a reviewer will find it. Preprocessing strips
+#      WinIPC target, and a reviewer will find it. Preprocessing strips
 #      comments, so the claim survives contact.
 #   2. False negative. A source grep cannot see which branches of the #ifdef
 #      maze a given -D combination actually selects. Only the preprocessor

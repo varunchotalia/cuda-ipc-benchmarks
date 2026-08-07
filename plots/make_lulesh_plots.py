@@ -14,7 +14,7 @@ rest are carried for provenance and for the paper's paired analysis.
 `rep` indexes the JOB SUBMISSION, not an in-process loop: run_lulesh_verify
 runs each variant once per job, so E1's five submissions give five independent
 runs per variant. `jobid` is carried alongside it so the paper's matched-pair
-residual (mpiwrap - ipc within a job) can be formed explicitly rather than by
+residual (WinIPC - ipc within a job) can be formed explicitly rather than by
 trusting that rep maps 1:1 onto a job -- the builder's --check-pairing asserts
 that it does.
 
@@ -67,6 +67,19 @@ CATEGORY = {  # variant -> plot category
     "ipc": "A", "mpiwrap": "A", "nvshmem": "A",
     "gpumpi": "T", "staged": "T", "shmwin": "W",
 }
+
+# variant key -> label drawn on the figure. The interposed-window backend was
+# renamed mpiwrap -> WinIPC, but the CSV keys, the make targets and the binary
+# names are still `mpiwrap*`: renaming those would break the queued Slurm jobs,
+# whose script text Slurm froze at submit time. So the rename lives here, at the
+# display edge, and the recorded data keeps its original keys. Drop this map
+# once the build-side identifiers are renamed too.
+DISPLAY = {"mpiwrap": "winipc", "mpiwrap_rp": "winipc_rp"}
+
+
+def label(v):
+    return DISPLAY.get(v, v)
+
 
 def load(path=CSV):
     rows = []
@@ -137,7 +150,7 @@ else:
 
 # =============== chart 1: all nine variants ===============
 fig, ax = plt.subplots(figsize=(COL_W, 3.0))
-names   = [v[0] for v in variants][::-1]
+names   = [label(v[0]) for v in variants][::-1]
 times   = [v[2] for v in variants][::-1]
 gains   = [v[3] for v in variants][::-1]
 colors  = [MODE_COLOR[v[1]] for v in variants][::-1]
@@ -169,11 +182,11 @@ fig.tight_layout()
 fig.savefig("plots/lulesh_variants_sxm.png", dpi=200)
 save(fig, "plots/lulesh_variants_sxm.pdf")
 
-# =============== chart 2: the three send modes, ipc vs mpiwrap ===============
+# =============== chart 2: the three send modes, ipc vs WinIPC ===============
 fig, ax = plt.subplots(figsize=(COL_W, 2.45))
 modes      = ["A\npack + copy", "C\nremote-pack", "B\ndirect writes"]
 IPC_V  = ["ipc", "ipc_rp", "direct"]
-WRAP_V = ["mpiwrap", "mpiwrap_rp", None]
+WIN_V = ["mpiwrap", "mpiwrap_rp", None]
 
 
 def bar_value(v):
@@ -192,7 +205,7 @@ def err(v):
 
 
 ipc_times  = [bar_value(v) for v in IPC_V]
-wrap_times = [bar_value(v) for v in WRAP_V[:2]]
+wrap_times = [bar_value(v) for v in WIN_V[:2]]
 
 x = range(3)
 w = 0.32
@@ -205,8 +218,8 @@ for i, v in enumerate(IPC_V):
         ax.errorbar(i - w/2, ipc_times[i], yerr=e, fmt="none", **EBAR)
 b2 = ax.bar([i + w/2 for i in x[:2]], wrap_times, width=w, color=GREEN,
             edgecolor=SURFACE, linewidth=1.0,
-            label="interposed MPI windows")
-for i, v in enumerate(WRAP_V[:2]):
+            label="WinIPC (interposed MPI windows)")
+for i, v in enumerate(WIN_V[:2]):
     e = err(v)
     if e:
         ax.errorbar(i + w/2, wrap_times[i], yerr=e, fmt="none", **EBAR)

@@ -1,5 +1,5 @@
 // comm_ipc_common.h -- transfer/unpack machinery shared by the two CUDA-IPC
-// backends (comm_ipc.h and comm_mpiwrap.h).  Both end up with d_peerRecv[r]
+// backends (comm_ipc.h and WinIPC's comm_mpiwrap.h).  Both end up with d_peerRecv[r]
 // = rank r's d_commDataRecv mapped into this process; they differ only in
 // how the mapping is established.
 //

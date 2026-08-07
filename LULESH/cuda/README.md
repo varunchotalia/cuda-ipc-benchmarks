@@ -7,6 +7,14 @@ in one header under `src/comm/`. One binary per variant, all built from
 `src/Makefile` (`make all`), all reproducing the staged baseline's reported
 Final Origin Energy on the full sedov run.
 
+> **Naming.** The interposed-window backend is now called **WinIPC** (formerly
+> *mpiwrap*). Its build identifiers are deliberately not renamed yet — the make
+> targets are still `mpiwrap`/`mpiwrap_rp`, the binaries `lulesh_mpiwrap*`, the
+> header `comm/comm_mpiwrap.h` and the macro `IPC_VIA_MPIWRAP` — because Slurm
+> freezes a job's script text at submit time and queued jobs still name them.
+> Tables below use **WinIPC** for the variant and the old spelling wherever a
+> literal target, binary, file or flag is meant.
+
 ## The six variants
 
 | Variant | Binary | Build flags | Halo data path | LD_PRELOAD |
@@ -15,17 +23,17 @@ Final Origin Energy on the full sedov run.
 | gpumpi | `lulesh_gpumpi` | `COMM_GPUMPI` | device pointers passed straight to CUDA-aware MPI | no |
 | shmwin | `lulesh_shmwin` | `COMM_SHMWIN` | GPU → peer's slice of an `MPI_Win_allocate_shared` host window → GPU; `Win_sync` + barriers | no |
 | ipc | `lulesh_ipc` | `COMM_IPC` | one D2D copy into the peer GPU's recv buffer via explicit `cudaIpcOpenMemHandle` mapping | no |
-| mpiwrap | `lulesh_mpiwrap` | `COMM_IPC IPC_VIA_MPIWRAP` | same data path as ipc, but the app only writes portable `MPI_Win_allocate` + `MPI_Win_shared_query`; the LD_PRELOADed `libmpiwrap.so` interposer supplies CUDA IPC (single node) or CUDA fabric handles (multi-node NVLink) underneath | **yes** |
+| WinIPC | `lulesh_mpiwrap` | `COMM_IPC IPC_VIA_MPIWRAP` | same data path as ipc, but the app only writes portable `MPI_Win_allocate` + `MPI_Win_shared_query`; the LD_PRELOADed `libmpiwrap.so` interposer supplies CUDA IPC (single node) or CUDA fabric handles (multi-node NVLink) underneath | **yes** |
 | nvshmem | `lulesh_nvshmem` | `COMM_NVSHMEM` | `nvshmemx_putmem_on_stream` into symmetric-heap recv buffers | no |
 
-The one-sided variants (shmwin / ipc / mpiwrap / nvshmem) post no receives:
+The one-sided variants (shmwin / ipc / WinIPC / nvshmem) post no receives:
 the sender computes the destination offset inside the *receiver's* recv
 buffer with `shmRecvOffset()` (which replays `CommRecv`'s message-ordering
 bookkeeping for the receiver's boundary booleans) and writes the data there
 directly. The init-time nodalMass exchange stays host-packed plain MPI in
 every variant; one-sided backends activate afterwards (`g_commActive`).
 
-**Synchronization (IPC/mpiwrap family)** is per-neighbor, not global:
+**Synchronization (IPC/WinIPC family)** is per-neighbor, not global:
 zero-byte token messages mirror the original send/recv matching. Receivers
 post zero-byte Irecvs in the same `recvRequest` slots real messages used —
 so the unpack routines' per-message `MPI_Wait`s become genuine arrival
@@ -74,7 +82,7 @@ passes device pointers to `MPI_Isend`/`Irecv`/`Send`/`Recv`, so it
 requires a working CUDA-aware MPI; it is dead code (never exercised) on
 any hardware tested so far, since every peer has been reachable.
 
-## The three send modes (IPC/mpiwrap family)
+## The three send modes (IPC/WinIPC family)
 
 | Mode | Binaries | Build flags | What happens per message |
 |------|----------|-------------|--------------------------|
@@ -83,7 +91,7 @@ any hardware tested so far, since every peer has been reachable.
 | B — direct | `lulesh_direct` | `COMM_IPC COMM_DIRECT` | **no pack, no unpack**: one fused kernel per message reads the sender's strided boundary values and writes them into the receiver's field arrays at the mirrored halo positions |
 
 Mode B details:
-- **Framing:** `lulesh_direct` has **no mpiwrap counterpart**, so it is
+- **Framing:** `lulesh_direct` has **no WinIPC counterpart**, so it is
   evidence for the *peer-write capability ceiling* — what a general peer
   pointer lets a kernel do that point-to-point MPI cannot express — and
   **not** a measurement of interposed performance. Only the matched A and C
@@ -106,7 +114,7 @@ Mode B details:
 
 ## Portability: multi-node NVLink (GB200/GH200 NVL-class)
 
-The mpiwrap abstraction is what makes rack-scale NVLink reachable without
+The WinIPC abstraction is what makes rack-scale NVLink reachable without
 touching the application: `lulesh_mpiwrap` speaks only `MPI_Win_allocate`
 + `MPI_Win_shared_query`, and the interposer picks the transport at
 runtime. On a single node it exchanges legacy CUDA-IPC handles (validated
@@ -176,8 +184,8 @@ decimals, so it cannot resolve these gaps):
 
 | Mode | hand-written | interposed | delta |
 |------|-------------:|-----------:|------:|
-| A — pack + copy   | `ipc` 1.59228 s | `mpiwrap` 1.59721 s | **+0.310%** |
-| C — remote-pack   | `ipc_rp` 1.36079 s | `mpiwrap_rp` 1.36011 s | **−0.050%** |
+| A — pack + copy   | `ipc` 1.59228 s | `winipc` 1.59721 s | **+0.310%** |
+| C — remote-pack   | `ipc_rp` 1.36079 s | `winipc_rp` 1.36011 s | **−0.050%** |
 
 Note mode C's interposed variant is marginally *faster*, which is why
 these should be described as agreeing within 0.4% rather than as
@@ -218,9 +226,9 @@ If a paper or table rescales this column, label it **Gzone/s**.
 |---------|------|------------:|--------:|----------:|----------:|
 | direct     | B | 1.25 | 0.397 | 1,833,814 | +56.8% |
 | ipc_rp     | C | 1.36 | 0.433 | 1,684,837 | +44.1% |
-| mpiwrap_rp | C | 1.36 | 0.433 | 1,685,677 | +44.1% |
+| winipc_rp  | C | 1.36 | 0.433 | 1,685,677 | +44.1% |
 | ipc        | A | 1.59 | 0.506 | 1,439,888 | +23.3% |
-| mpiwrap    | A | 1.60 | 0.509 | 1,435,439 | +22.5% |
+| winipc     | A | 1.60 | 0.509 | 1,435,439 | +22.5% |
 | nvshmem    | A | 1.74 | 0.553 | 1,315,001 | +12.6% |
 | gpumpi     | — | 1.83 | 0.582 | 1,250,391 |  +7.1% |
 | staged     | — | 1.96 | 0.623 | 1,169,930 | baseline |
@@ -237,7 +245,7 @@ previously reported 1.70× *faster* than staged, it is in fact ~5%
 
 ![LULESH halo-exchange variants](../../plots/lulesh_variants_sxm.png)
 
-![Send modes: ipc vs mpiwrap](../../plots/lulesh_modes_sxm.png)
+![Send modes: ipc vs WinIPC](../../plots/lulesh_modes_sxm.png)
 
 Takeaways:
 
@@ -441,7 +449,7 @@ LULESH/
 cd LULESH/cuda/src
 make all                # or any single target, e.g. make mpiwrap_rp
 
-# mpiwrap flavors need the interposer at runtime; everything else runs plain
+# WinIPC flavors need the interposer at runtime; everything else runs plain
 MPIWRAP=~/mpiwrap/mpi-intercept/libmpiwrap.so
 mpirun -np 8 ./lulesh_staged -s 45
 LD_PRELOAD=$MPIWRAP mpirun -np 8 ./lulesh_mpiwrap -s 45
