@@ -272,6 +272,10 @@ int MPI_Win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
 
     void* d_ptr;
     if (cudaMalloc(&d_ptr, size) != cudaSuccess) {
+        // Same rule as shared_query: we report the failure through the MPI
+        // return code, so clear it rather than leaving it for the app's next
+        // kernel launch to trip over.
+        cudaGetLastError();
         LOG("cudaMalloc failed for size %zu", (size_t)size);
         return MPI_ERR_NO_MEM;
     }
@@ -305,9 +309,18 @@ int MPI_Win_shared_query(MPI_Win win, int target,
 
     if (!m->opened[target]) {
         void* ptr;
-        if (cudaIpcOpenMemHandle(&ptr, m->handles[target],
-                                 cudaIpcMemLazyEnablePeerAccess) != cudaSuccess) {
-            LOG("Failed to open IPC handle for rank %d", target);
+        cudaError_t cerr = cudaIpcOpenMemHandle(&ptr, m->handles[target],
+                                                cudaIpcMemLazyEnablePeerAccess);
+        if (cerr != cudaSuccess) {
+            // Expected whenever the window spans nodes without fabric support:
+            // the remote peer's handle is unopenable here and the app falls
+            // back to MPI for it. Clear the error before returning -- CUDA
+            // keeps it as the thread's last error, and the app's next kernel
+            // launch would otherwise report this failure as its own (thrust
+            // throws "parallel_for failed: cudaErrorInvalidDevice").
+            cudaGetLastError();
+            LOG("Failed to open IPC handle for rank %d: %s", target,
+                cudaGetErrorString(cerr));
             return MPI_ERR_OTHER;
         }
         m->opened[target] = ptr;
