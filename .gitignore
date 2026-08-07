@@ -60,3 +60,10 @@ build_*.log
 /stencil_ipc
 /stencil_mpi
 /stencil_gpu_mpi
+
+# CloverLeaf: was a submodule pointing at upstream UoB-HPC/CloverLeaf. Dropped
+# because it is out of scope for this project and the local edits could never
+# be pushed there anyway (no write access to upstream). The checkout stays on
+# disk with its own .git and its own history -- it is simply not part of this
+# repo. Local-only: nothing here backs it up.
+/CloverLeaf/
