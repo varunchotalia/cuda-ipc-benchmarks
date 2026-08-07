@@ -105,34 +105,38 @@ __global__ void AddPlane(Real_t *srcAddr, Real_t *destAddr, Index_t recvCount, I
 
   int i, j;
 
+  /* atomicAdd: face/edge/corner unpack kernels for adjacent neighbors run on
+     distinct streams and += the SAME shared boundary node concurrently. Plain
+     += is a lost-update race (nondeterministic Final Origin Energy); atomics
+     serialize the shared-node updates. */
   switch (type) {
   case 0:
     i = tid;
-    destAddr[i] += srcAddr[i] ;
+    atomicAdd(&destAddr[i], srcAddr[i]) ;
     break;
   case 1:
     i = tid;
-    destAddr[dx*dy*(dz - 1) + i] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*dy*(dz - 1) + i], srcAddr[i]) ;
     break;
   case 2:
     i = tid / dx;
     j = tid % dx;
-    destAddr[i*dx*dy + j] += srcAddr[i*dx + j] ;
+    atomicAdd(&destAddr[i*dx*dy + j], srcAddr[i*dx + j]) ;
     break;
   case 3:
     i = tid / dx;
     j = tid % dx;
-    destAddr[dx*(dy - 1) + i*dx*dy + j] += srcAddr[i*dx + j] ;
+    atomicAdd(&destAddr[dx*(dy - 1) + i*dx*dy + j], srcAddr[i*dx + j]) ;
     break;
   case 4:
     i = tid / dy;
     j = tid % dy;
-    destAddr[i*dx*dy + j*dx] += srcAddr[i*dy + j] ;
+    atomicAdd(&destAddr[i*dx*dy + j*dx], srcAddr[i*dy + j]) ;
     break;
   case 5:
     i = tid / dy;
     j = tid % dy;
-    destAddr[dx - 1 + i*dx*dy + j*dx] += srcAddr[i*dy + j] ;
+    atomicAdd(&destAddr[dx - 1 + i*dx*dy + j*dx], srcAddr[i*dy + j]) ;
     break;
   }
 }
@@ -229,42 +233,44 @@ __global__ void AddEdge(Real_t *srcAddr, Real_t *destAddr, Index_t recvCount, In
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if (i >= recvCount) return;
 
+  /* atomicAdd: see AddPlane -- edges share end nodes with faces/corners updated
+     concurrently on other streams. */
   switch (type) {
   case 0:
-    destAddr[i*dx*dy] += srcAddr[i] ;
+    atomicAdd(&destAddr[i*dx*dy], srcAddr[i]) ;
     break;
   case 1:
-    destAddr[i] += srcAddr[i] ;
+    atomicAdd(&destAddr[i], srcAddr[i]) ;
     break;
   case 2:
-    destAddr[i*dx] += srcAddr[i] ;
+    atomicAdd(&destAddr[i*dx], srcAddr[i]) ;
     break;
   case 3:
-    destAddr[dx*dy - 1 + i*dx*dy] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*dy - 1 + i*dx*dy], srcAddr[i]) ;
     break;
   case 4:
-    destAddr[dx*(dy-1) + dx*dy*(dz-1) + i] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*(dy-1) + dx*dy*(dz-1) + i], srcAddr[i]) ;
     break;
   case 5:
-    destAddr[dx*dy*(dz-1) + dx - 1 + i*dx] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*dy*(dz-1) + dx - 1 + i*dx], srcAddr[i]) ;
     break;
   case 6:
-    destAddr[dx*(dy-1) + i*dx*dy] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*(dy-1) + i*dx*dy], srcAddr[i]) ;
     break;
   case 7:
-    destAddr[dx*dy*(dz-1) + i] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*dy*(dz-1) + i], srcAddr[i]) ;
     break;
   case 8:
-    destAddr[dx*dy*(dz-1) + i*dx] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*dy*(dz-1) + i*dx], srcAddr[i]) ;
     break;
   case 9:
-    destAddr[dx - 1 + i*dx*dy] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx - 1 + i*dx*dy], srcAddr[i]) ;
     break;
   case 10:
-    destAddr[dx*(dy - 1) + i] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx*(dy - 1) + i], srcAddr[i]) ;
     break;
   case 11:
-    destAddr[dx - 1 + i*dx] += srcAddr[i] ;
+    atomicAdd(&destAddr[dx - 1 + i*dx], srcAddr[i]) ;
     break;
   }
 }
@@ -317,7 +323,7 @@ __global__ void CopyEdge(Real_t *srcAddr, Real_t *destAddr, Index_t recvCount, I
 
 __global__ void AddCorner(Real_t *destAddr, Real_t src)
 {
-  destAddr[0] += src;
+  atomicAdd(&destAddr[0], src);   /* corner shared with faces/edges on other streams */
 }
 
 __global__ void CopyCorner(Real_t *destAddr, Real_t src)
@@ -329,7 +335,7 @@ __global__ void CopyCorner(Real_t *destAddr, Real_t src)
    memory, where the host cannot read the value to pass it by value. */
 __global__ void AddCornerPtr(Real_t *destAddr, Real_t *src)
 {
-  destAddr[0] += src[0];
+  atomicAdd(&destAddr[0], src[0]);   /* corner shared with faces/edges on other streams */
 }
 
 __global__ void CopyCornerPtr(Real_t *destAddr, Real_t *src)
