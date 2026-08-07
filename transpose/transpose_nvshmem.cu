@@ -443,6 +443,13 @@ int main(int argc, char **argv)
             unpack_kernel<<<tgrd, tblk, 0, stream>>>(
                 B_sym, order, recv_from * Bo, recv_buf, Bo, ACCUMULATE);
             CUDA_CHECK(cudaStreamSynchronize(stream));
+            /* recv_buf is a single symmetric buffer reused every phase. Without
+               a barrier AFTER the unpack, a rank that races ahead into the next
+               phase can putmem into a peer's recv_buf while that peer is still
+               unpacking this phase's data -> cross-phase overwrite race (clean
+               at small P, corrupts at N>=32 where cross-node skew is larger).
+               The COMM_MODE==0 direct path already has this trailing barrier. */
+            nvshmem_barrier_all();
 #endif
         }
 #endif
