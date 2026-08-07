@@ -27,8 +27,8 @@
 static inline void commIpcAllocAndMapPacked(Domain* d, Index_t comBufSize)
 {
    d->commDataRecv = new Real_t[comBufSize] ;
-   cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0) ;
-   cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t)) ;
+   COMM_CUDA_OK(cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0)) ;
+   COMM_CUDA_OK(cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t))) ;
 
    int myRank ;
    MPI_Comm_rank(MPI_COMM_WORLD, &myRank) ;
@@ -71,7 +71,13 @@ static inline void commIpcAllocAndMapPacked(Domain* d, Index_t comBufSize)
          ++nFallback ;
       }
    }
-   if (myRank == 0 && nFallback > 0) {
+   /* Printed unconditionally -- see the note in comm_mpiwrap.h.  On a
+      multi-node machine this is the number that decides how to label the
+      column: cudaIpcGetMemHandle handles never cross a node, so at 27 or 64
+      ranks (4 GPUs/node) only about 3 of a domain's 26 neighbours are
+      same-node and the rest run over GPU-aware MPI.  A run that reports a
+      large fallback count is not measuring CUDA IPC. */
+   if (myRank == 0) {
       printf("comm: %d of %d peers not IPC-reachable, using MPI send/recv "
              "fallback for them\n", nFallback, (int)d->m_numRanks - 1) ;
    }

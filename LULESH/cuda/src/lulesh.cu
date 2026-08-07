@@ -492,9 +492,26 @@ Domain::SetupCommBuffers(Int_t edgeNodes)
                  (m_rowMax & m_colMax & m_planeMin) +
                  (m_rowMax & m_colMax & m_planeMax)) * CACHE_COHERENCE_PAD_REAL ;
 
+  // At np=1 the domain has no neighbours, so every min/max term above is 0 and
+  // comBufSize computes to 0.  A zero-byte buffer is not a legal argument to
+  // the setup calls that follow: cudaHostRegister(ptr, 0) returns
+  // cudaErrorInvalidValue, nvshmem_malloc(0) returns NULL, and
+  // cudaIpcGetMemHandle over a zero-byte allocation fails.  Those returns were
+  // discarded before COMM_CUDA_OK existed, which is why the 1-rank leg appeared
+  // to work; it was making an invalid call on every backend and ignoring it.
+  //
+  // Clamp rather than skip the allocation.  The 1-rank point exists to isolate
+  // window construction from peer mapping, so each backend must still build its
+  // window / symmetric-heap segment / IPC handle -- just over a minimal buffer.
+  // Skipping setup would report 0 ms for work the mechanism really does.  At
+  // np>1 comBufSize is far larger and the clamp never binds.
+  if (comBufSize == 0) {
+     comBufSize = 1 ;
+  }
+
   this->commDataSend = new Real_t[comBufSize] ;
-  cudaHostRegister(this->commDataSend, comBufSize*sizeof(Real_t), 0);
-  cudaMalloc(&this->d_commDataSend, comBufSize*sizeof(Real_t));
+  COMM_CUDA_OK(cudaHostRegister(this->commDataSend, comBufSize*sizeof(Real_t), 0));
+  COMM_CUDA_OK(cudaMalloc(&this->d_commDataSend, comBufSize*sizeof(Real_t)));
 
   // recv buffers (and any window / peer-mapping state) come from the
   // selected comm backend.

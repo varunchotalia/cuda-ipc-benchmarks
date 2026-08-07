@@ -47,6 +47,24 @@ extern double g_phaseCommFreeMs ;    /* all backends: whole commTeardown  */
 extern double g_phaseWinAllocMs ;    /* window construction only, or 0    */
 extern double g_phasePeerQueryMs ;   /* peer query / mapping only, or 0   */
 
+/* Setup-path error checking.  Every backend allocates and maps its recv
+   buffers before any solver work runs, and these calls used to go unchecked:
+   a failure surfaced much later as a segfault or a bare MPI abort with
+   nothing naming the cause.  That is exactly what the GB200 NVL72 27- and
+   64-rank runs reported ("FAILED (crash)", no attribution).  Check at the
+   call site so the log names the rank, the call and the CUDA error. */
+#define COMM_CUDA_OK(call)                                                   \
+   do {                                                                      \
+      cudaError_t _e_ = (call) ;                                             \
+      if (_e_ != cudaSuccess) {                                              \
+         int _r_ = -1 ; MPI_Comm_rank(MPI_COMM_WORLD, &_r_) ;                \
+         fprintf(stderr, "rank %d: %s:%d: %s failed: %s\n", _r_,             \
+                 __FILE__, __LINE__, #call, cudaGetErrorString(_e_)) ;       \
+         fflush(stderr) ;                                                    \
+         MPI_Abort(MPI_COMM_WORLD, 1) ;                                      \
+      }                                                                      \
+   } while (0)
+
 /* Mirrors the posting order of CommRecv() to compute the offset within rank
    recvRank's commDataRecv where the message arriving from direction
    (dCol,dRow,dPlane) -- the sender's position relative to the receiver --

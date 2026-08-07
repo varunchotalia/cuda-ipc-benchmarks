@@ -8,8 +8,8 @@
 static inline void commAllocRecv(Domain* d, Index_t comBufSize)
 {
    d->commDataRecv = new Real_t[comBufSize] ;
-   cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0) ;
-   cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t)) ;
+   COMM_CUDA_OK(cudaHostRegister(d->commDataRecv, comBufSize*sizeof(Real_t), 0)) ;
+   COMM_CUDA_OK(cudaMalloc(&d->d_commDataRecv, comBufSize*sizeof(Real_t))) ;
 }
 
 static inline void commTeardown(Domain* d, int myRank)
