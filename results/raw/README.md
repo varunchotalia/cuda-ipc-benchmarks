@@ -16,6 +16,12 @@ Currently held here (not in git):
 | log | job | what it backs |
 |-----|-----|---------------|
 | `lulesh_verify_60150.out` | 60150 | `results/lulesh_results.csv` — all nine LULESH variants, UCX defaults, h200x8-03. 1335 lines, of which 1032 are gpumpi teardown `cuCtxGetApiVersion` noise. |
+| `transpose_figure_60636.out` | 60636 | `results/transpose_timing_merge.md` — all eight series at `6f674cb`, i.e. before PR #1. Holds the one `validates=0` cell (`order=4096 accum=1 nvbuffered`) that Claim 3 rests on. |
+| `stopsync_ab_61344.out` | 61344 | `results/transpose_timing_merge.md` Claim 1 — PRE/POST A/B, 3 reps per cell. `DEVLINE` rows carry the `wall/iter` values behind the overhead table. |
+| `transpose_figure_61541.out` | 61541 | `results/transpose_timing_merge.md` Claim 2 — all eight series after PR #1 and the NVSHMEM barrier. 80/80 validate. |
+
+These three are kept at the repo root as well as here (Slurm writes them there);
+the copies in this directory are the audit trail.
 
 If a log is ever needed in-repo, prefer extending the consolidated results
 file over force-adding the log past `.gitignore`.
