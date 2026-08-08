@@ -61,6 +61,12 @@ build_*.log
 /stencil_mpi
 /stencil_gpu_mpi
 
+# Scratch copy of the benchmark tree ("cuda-ipc-benchmarks 2", 26 MB). A local
+# duplicate of sources that already live in this repo, kept only for diffing
+# against an older checkout. Never commit it: two divergent copies of the same
+# benchmark is exactly how libmpiwrap.so went stale in three different builds.
+/test/
+
 # CloverLeaf: was a submodule pointing at upstream UoB-HPC/CloverLeaf. Dropped
 # because it is out of scope for this project and the local edits could never
 # be pushed there anyway (no write access to upstream). The checkout stays on
