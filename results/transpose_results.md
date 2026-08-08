@@ -1,11 +1,43 @@
 # Transpose Benchmark — H200 GPUs, 100 iterations
 
-> **READ FIRST (added 2026-08-01, jobs 59067 + 59070).** The tables below
-> (measured 2026-05-05 under UCX *default* transport selection) appear to be
-> CORRECT. Do not "fix" them. Two later-discovered effects can make them look
+> **READ FIRST (added 2026-08-01, jobs 59067 + 59070).** The IPC/MPI tables
+> below (measured 2026-05-05 under UCX *default* transport selection) appear to
+> be CORRECT. Do not "fix" them. Two later-discovered effects can make them look
 > wrong if you re-measure with `UCX_TLS` pinned — see
 > "Appendix: UCX_TLS pinning" at the end of this file. Short version:
 > **do not export `UCX_TLS`; use UCX defaults.**
+
+> **PROVENANCE — THIS FILE IS NOT ONE MEASUREMENT (corrected 2026-08-08).**
+> The note above said "the tables below (measured 2026-05-05)". That was only
+> ever true of the IPC/MPI tables. Traced cell by cell against the job logs:
+>
+> | section | job | date |
+> |---|---|---|
+> | 4-GPU IPC / MPI (both accumulate settings) | 28917 | 2026-05-05 |
+> | 4-GPU NVSHMEM (both accumulate settings) | **61541** | **2026-08-07** |
+>
+> The NVSHMEM tables previously held job **21711 (2026-04-04)** data — four
+> months old, predating the `UCX_TLS` re-baseline (`05d0e2b`), the
+> `TRANSPOSE_WARMUP=20` convention, *and* the NVSHMEM post-unpack race fix
+> (`7ec29b5`). They also carried a literal `(rerun pending)` placeholder at
+> 2048² accum NVSHMEM-buffered, which the plot script renders as a gap.
+> Replaced here with job 61541: one job, all ten cells validating, warmup 20,
+> UCX defaults, post-race-fix. See `results/transpose_timing_merge.md`.
+>
+> **What moved and why.** Only the *buffered* NVSHMEM series changes materially
+> — it is the only one that executes the `recv_buf`/`unpack` path the new
+> `nvshmem_barrier_all()` sits in. It drops most at small matrices (1024² accum
+> 139.2 → 111.9 GB/s, −20%) and converges by 16384² (1083.1 → 1073.8, −0.9%).
+> That is a correctness cost, not a regression: the old numbers came from a
+> configuration that failed validation outright at 4096² accum in job 60636.
+> `NVSHMEM direct` and `single-K` shift only by run-to-run noise.
+>
+> **STILL STALE: the IPC/MPI half.** Those are 2026-05-05 numbers and have not
+> been re-taken on a current build. Job **61945** (`transpose_fig_v2`) will
+> supply a clean single-provenance replacement for them. Do not splice job
+> 61541's `direct`/`single` columns in as an interim fix — they are inflated by
+> in-loop `cudaEventElapsedTime` instrumentation, ~6 µs/iteration, which is
+> −22% at 1024² (see `results/transpose_timing_merge.md`, Claim 1).
 
 ## 4 GPUs — With Accumulation (B += A^T)
 
@@ -41,21 +73,21 @@ Matrix Size | Mode                    | GB/s
 ### NVSHMEM
 Matrix Size | Mode              | GB/s
 ------------|-------------------|-------
-1024²       | NVSHMEM direct    |  147.3
-1024²       | NVSHMEM single-K  |  358.3
-1024²       | NVSHMEM buffered  |  139.2
-2048²       | NVSHMEM direct    |  384.2
-2048²       | NVSHMEM single-K  |  847.4
-2048²       | NVSHMEM buffered  | (rerun pending)
-4096²       | NVSHMEM direct    |  601.6
-4096²       | NVSHMEM single-K  |  826.8
-4096²       | NVSHMEM buffered  |  788.8
-8192²       | NVSHMEM direct    |  776.6
-8192²       | NVSHMEM single-K  |  872.0
-8192²       | NVSHMEM buffered  | 1009.3
+1024²       | NVSHMEM direct    |  147.4
+1024²       | NVSHMEM single-K  |  359.3
+1024²       | NVSHMEM buffered  |  111.9
+2048²       | NVSHMEM direct    |  383.7
+2048²       | NVSHMEM single-K  |  881.8
+2048²       | NVSHMEM buffered  |  358.8
+4096²       | NVSHMEM direct    |  608.1
+4096²       | NVSHMEM single-K  |  826.9
+4096²       | NVSHMEM buffered  |  726.0
+8192²       | NVSHMEM direct    |  776.3
+8192²       | NVSHMEM single-K  |  871.5
+8192²       | NVSHMEM buffered  |  979.0
 16384²      | NVSHMEM direct    |  855.0
-16384²      | NVSHMEM single-K  |  880.0
-16384²      | NVSHMEM buffered  | 1083.1
+16384²      | NVSHMEM single-K  |  879.9
+16384²      | NVSHMEM buffered  | 1073.8
 
 ## 4 GPUs — Without Accumulation (B = A^T)
 
@@ -91,21 +123,21 @@ Matrix Size | Mode                    | GB/s
 ### NVSHMEM
 Matrix Size | Mode              | GB/s
 ------------|-------------------|-------
-1024²       | NVSHMEM direct    |  162.4
-1024²       | NVSHMEM single-K  |  400.5
-1024²       | NVSHMEM buffered  |  152.3
-2048²       | NVSHMEM direct    |  472.9
-2048²       | NVSHMEM single-K  | 1066.7
-2048²       | NVSHMEM buffered  |  428.6
-4096²       | NVSHMEM direct    |  875.9
-4096²       | NVSHMEM single-K  | 1217.5
-4096²       | NVSHMEM buffered  |  808.5
-8192²       | NVSHMEM direct    | 1152.5
-8192²       | NVSHMEM single-K  | 1279.3
-8192²       | NVSHMEM buffered  | 1085.1
-16384²      | NVSHMEM direct    | 1259.8
+1024²       | NVSHMEM direct    |  161.4
+1024²       | NVSHMEM single-K  |  414.6
+1024²       | NVSHMEM buffered  |  119.3
+2048²       | NVSHMEM direct    |  471.1
+2048²       | NVSHMEM single-K  | 1013.8
+2048²       | NVSHMEM buffered  |  359.0
+4096²       | NVSHMEM direct    |  874.6
+4096²       | NVSHMEM single-K  | 1218.2
+4096²       | NVSHMEM buffered  |  752.7
+8192²       | NVSHMEM direct    | 1151.8
+8192²       | NVSHMEM single-K  | 1278.7
+8192²       | NVSHMEM buffered  | 1052.2
+16384²      | NVSHMEM direct    | 1259.9
 16384²      | NVSHMEM single-K  | 1295.1
-16384²      | NVSHMEM buffered  | 1178.3
+16384²      | NVSHMEM buffered  | 1167.2
 
 ## 2 GPUs — With Accumulation (Buffered IPC)
 Matrix Size | Mode           | GB/s

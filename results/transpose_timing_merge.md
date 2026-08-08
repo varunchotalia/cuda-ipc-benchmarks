@@ -126,6 +126,35 @@ Do not read it as an effect.
 
 **Write it as "the buffered NVSHMEM series", not "the NVSHMEM series".**
 
+### Action taken (2026-08-08) — the figure was wrong, and is now fixed
+
+This claim required a figure regeneration, not just careful wording.
+`plots/make_transpose_plots.py` reads `results/transpose_results.md`, and that
+file's NVSHMEM tables were **job 21711 (2026-04-04)** — not 60636 as first
+assumed, and four months stale. They predated the `UCX_TLS` re-baseline, the
+`TRANSPOSE_WARMUP=20` convention *and* the race fix, and carried a literal
+`(rerun pending)` placeholder at 2048² accum that the plot script rendered as
+a gap.
+
+`transpose_ipc_vs_nvshmem.pdf` plots the **no-accumulation** bucket, so that is
+where the error lived. NVSHMEM-buffered, old vs job 61541:
+
+| order | was (21711) | now (61541) | overstatement |
+|------:|------------:|------------:|--------------:|
+| 1024 | 152.3 | 119.3 | +27.7% |
+| 2048 | 428.6 | 359.0 | +19.4% |
+| 4096 | 808.5 | 752.7 | +7.4% |
+| 8192 | 1085.1 | 1052.2 | +3.1% |
+| 16384 | 1178.3 | 1167.2 | +1.0% |
+
+The published curve was up to **28% too fast at the small grids, in the
+paper's favour**, sourced from a configuration that failed validation outright
+at 4096² accum in job 60636. Both NVSHMEM tables have been replaced with 61541
+and the figure regenerated.
+
+The IPC/MPI half of that file is still 2026-05-05 data and is *not* fixed by
+this — see the provenance block at the top of `results/transpose_results.md`.
+
 ---
 
 ## Claim 3 — the race fix has stronger evidence than its own commit message

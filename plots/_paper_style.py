@@ -53,6 +53,13 @@ def use_paper_style():
 
 
 def save(fig, path):
-    fig.savefig(path)
+    # CreationDate=None suppresses the wall-clock timestamp matplotlib embeds in
+    # the PDF. Without it every regeneration rewrites every figure byte-for-byte
+    # differently, so `git status` cannot distinguish "this figure's data
+    # changed" from "the generator ran again" -- which is precisely the
+    # confusion that let stale figures sit beside fresh tables (see the
+    # provenance note in results/transpose_results.md). With it, a figure shows
+    # up as modified only when its numbers actually moved.
+    fig.savefig(path, metadata={"CreationDate": None})
     plt.close(fig)
     print(f"wrote {path}")
