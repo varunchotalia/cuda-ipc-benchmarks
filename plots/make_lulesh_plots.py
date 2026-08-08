@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 """LULESH charts for the paper. Writes two single-column PDFs:
 
-    plots/lulesh_variants_sxm.pdf  all nine variants, ranked by elapsed
+    plots/lulesh_variants_sxm.pdf  all nine variants, ranked by FOM (Gzone/s)
     plots/lulesh_modes_sxm.pdf     the three send modes, handwritten vs interposed
 
+THE TWO CHARTS PLOT OPPOSITE POLARITIES, DELIBERATELY. Chart 1 is the figure
+of merit -- the established LULESH metric, and time-neutral -- so higher is
+better. Chart 2 stays on elapsed seconds because the matched-pair residual
+between ipc and winipc reads better in time than as a ratio of rates, so lower
+is better. Both axis labels state their direction explicitly; do not drop that
+text, it is the only thing stopping two adjacent figures from being read the
+same way round.
+
 VARIANCE (E1). If results/lulesh_variance.csv exists it is used to draw
-min/max whiskers on the matched pairs in chart 2, and the bar becomes the
-median of the repetitions rather than a single run. Build it with
-scripts/build_lulesh_variance_csv.py, which emits one row per (variant, job)
-with no pre-aggregation; only `variant` and `elapsed_s_hi` are read here, the
-rest are carried for provenance and for the paper's paired analysis.
+min/max whiskers on BOTH charts, and each bar becomes the median of the
+repetitions rather than a single run -- on the FOM axis for chart 1 and the
+elapsed axis for chart 2. Build it with scripts/build_lulesh_variance_csv.py,
+which emits one row per (variant, job) with no pre-aggregation; `variant`,
+`elapsed_s_hi` and `fom_z_per_s` are read here, the rest are carried for
+provenance and for the paper's paired analysis.
+
+CAUTION: the bars are then medians over jobs 60796-60800, while the CSV's
+`gain_pct` column is job 60150's single run. Chart 1 therefore recomputes its
+percentages from the plotted values instead of reading gain_pct, so the labels
+always agree with the bars. The two differ by 0.3-1.0 percentage points.
 
 `rep` indexes the JOB SUBMISSION, not an in-process loop: run_lulesh_verify
 runs each variant once per job, so E1's five submissions give five independent
@@ -93,19 +107,26 @@ def load(path=CSV):
     for r in rd:
         out[r["variant"]] = {
             "elapsed": float(r["elapsed_s_hi"]),
+            "fom": float(r["fom_z_per_s"]) / FOM_PER_GZ,
             "gain": float(r["gain_pct"]) / 100.0,
             "mode": r["mode"],
         }
     return out
 
+
+# The CSV column is NAMED fom_z_per_s but is not in zones/s -- it is off by a
+# factor of 1000. Cross-checked against the header's own zone_cycles:
+#   zone_cycles 2292705000 / elapsed 1.25024 s = 1.8338e9 zone-cycles/s,
+#   while the column reads 1833813.8. Ratio exactly 1000.
+# So Gzone/s = column / 1e6, NOT column / 1e9 -- dividing by 1e9 would print
+# 0.0018 Gzone/s and look like a unit error rather than a value. Do not
+# "simplify" this constant without re-deriving it from zone_cycles.
+FOM_PER_GZ = 1.0e6
+
 DATA = load()
 missing = set(CATEGORY) - set(DATA)
 if missing:
     raise SystemExit(f"CSV is missing variants: {sorted(missing)}")
-
-# ascending elapsed == descending performance
-variants = [(k, CATEGORY[k], DATA[k]["elapsed"], DATA[k]["gain"])
-            for k in sorted(DATA, key=lambda k: DATA[k]["elapsed"])]
 
 MODE_COLOR = {"B": BLUE, "C": GREEN, "A": MAGENTA, "T": YELLOW, "W": GREY}
 MODE_LABEL = {
@@ -123,21 +144,33 @@ VAR_CSV = os.path.join(os.path.dirname(__file__), "..", "results",
 
 
 def load_variance(path=VAR_CSV):
-    """variant -> (median, min, max) over repetitions, or {} if unavailable."""
+    """variant -> {"elapsed": (med,min,max), "fom": (med,min,max)}, or {}.
+
+    Both metrics are carried because the two charts now plot different axes:
+    chart 1 is FOM (higher is better), chart 2 stays on elapsed seconds (lower
+    is better). Whiskers must be computed on whatever quantity is drawn --
+    min/max of elapsed are NOT the endpoints of min/max of FOM once rounded,
+    and reusing one for the other would draw whiskers that do not bracket
+    their own bar.
+    """
     if not os.path.exists(path):
         return {}
     reps = {}
     with open(path) as f:
         rows = [ln for ln in f if not ln.startswith("#") and ln.strip()]
     for r in csv.DictReader(rows):
-        reps.setdefault(r["variant"], []).append(float(r["elapsed_s_hi"]))
-    out = {}
-    for v, xs in reps.items():
-        xs.sort()
+        d = reps.setdefault(r["variant"], {"elapsed": [], "fom": []})
+        d["elapsed"].append(float(r["elapsed_s_hi"]))
+        d["fom"].append(float(r["fom_z_per_s"]) / FOM_PER_GZ)
+
+    def summarise(xs):
+        xs = sorted(xs)
         n = len(xs)
         med = xs[n // 2] if n % 2 else 0.5 * (xs[n // 2 - 1] + xs[n // 2])
-        out[v] = (med, xs[0], xs[-1])
-    return out
+        return (med, xs[0], xs[-1])
+
+    return {v: {k: summarise(xs) for k, xs in d.items()}
+            for v, d in reps.items()}
 
 
 VAR = load_variance()
@@ -148,22 +181,60 @@ else:
     print("variance: results/lulesh_variance.csv absent -- single-run values, "
           "no whiskers (rerun once E1 jobs 60796-60800 land)")
 
-# =============== chart 1: all nine variants ===============
+# =============== chart 1: all nine variants, figure of merit ===============
+# FOM rather than elapsed seconds: it is the established LULESH metric and it is
+# time-neutral. Same runs, same data -- only the quantity plotted changes.
+# Ordering is descending FOM so "best" stays at the top as it was under
+# ascending elapsed; FOM inverts the sense, so the sort key has to invert too.
+
+
+def fom_value(v):
+    """Median FOM over reps when variance data exists, else the single run."""
+    if v in VAR:
+        return VAR[v]["fom"][0]
+    return DATA[v]["fom"]
+
+
+def fom_err(v):
+    """[[lo],[hi]] whisker offsets from the plotted FOM, or None."""
+    if v not in VAR:
+        return None
+    med, lo, hi = VAR[v]["fom"]
+    return [[med - lo], [hi - med]]
+
+
+# Gains are recomputed from the PLOTTED values against the plotted staged bar,
+# not taken from the CSV's gain_pct. gain_pct is job 60150's single run, but the
+# bars are medians over jobs 60796-60800 whenever the variance CSV is present.
+# Reading one off the other would print a percentage the bars do not support.
+fom_order = sorted(DATA, key=lambda k: -fom_value(k))
+staged_fom = fom_value("staged")
+
+names  = [label(v) for v in fom_order][::-1]
+foms   = [fom_value(v) for v in fom_order][::-1]
+gains  = [fom_value(v) / staged_fom - 1.0 for v in fom_order][::-1]
+colors = [MODE_COLOR[CATEGORY[v]] for v in fom_order][::-1]
+errs   = [fom_err(v) for v in fom_order][::-1]
+
 fig, ax = plt.subplots(figsize=(COL_W, 3.0))
-names   = [label(v[0]) for v in variants][::-1]
-times   = [v[2] for v in variants][::-1]
-gains   = [v[3] for v in variants][::-1]
-colors  = [MODE_COLOR[v[1]] for v in variants][::-1]
-
-bars = ax.barh(names, times, height=0.62, color=colors,
+bars = ax.barh(names, foms, height=0.62, color=colors,
                edgecolor=SURFACE, linewidth=1.0)
-for bar, t, g in zip(bars, times, gains):
-    lab = f"{t:.3f} s" if g == 0.0 else f"{t:.3f} s ({g*100:+.1f}%)"
-    ax.text(bar.get_width() + 0.04, bar.get_y() + bar.get_height()/2, lab,
-            va="center", ha="left", fontsize=5.5, color=INK)
+EBAR1 = dict(ecolor=INK2, capsize=1.8, elinewidth=0.7, capthick=0.7)
+for i, e in enumerate(errs):
+    if e:
+        ax.errorbar(foms[i], i, xerr=e, fmt="none", **EBAR1)
 
-ax.set_xlabel("elapsed (s) - lower is better")
-ax.set_xlim(0, 3.15)
+# Value label on every bar. Table VII is dropping its numeric columns, so this
+# figure becomes the only place the nine-variant numbers appear -- a reader
+# checking the percentages quoted in the text has nowhere else to look.
+for i, (bar, f, g) in enumerate(zip(bars, foms, gains)):
+    lab = f"{f:.3f} Gz/s" if abs(g) < 1e-12 else f"{f:.3f} Gz/s ({g*100:+.1f}%)"
+    hi = errs[i][1][0] if errs[i] else 0.0
+    ax.text(bar.get_width() + hi + 0.035, bar.get_y() + bar.get_height()/2,
+            lab, va="center", ha="left", fontsize=5.5, color=INK)
+
+ax.set_xlabel("FOM (Gzone/s) - higher is better")
+ax.set_xlim(0, 2.80)
 ax.xaxis.grid(True, color=GRID, linewidth=0.6)
 ax.set_axisbelow(True)
 for side in ("top", "right", "left"):
@@ -190,17 +261,23 @@ WIN_V = ["mpiwrap", "mpiwrap_rp", None]
 
 
 def bar_value(v):
-    """Median over reps when variance data exists, else the single run."""
+    """Median elapsed over reps when variance data exists, else the single run.
+
+    Chart 2 deliberately stays on elapsed seconds: the matched-pair residual
+    between ipc/winipc reads better in time than as a ratio of rates. That
+    leaves the two adjacent LULESH figures with OPPOSITE polarity, which is why
+    both axis labels carry an explicit "lower is better" / "higher is better".
+    """
     if v in VAR:
-        return VAR[v][0]
+        return VAR[v]["elapsed"][0]
     return DATA[v]["elapsed"]
 
 
 def err(v):
-    """[[lo],[hi]] whisker offsets from the plotted value, or None."""
+    """[[lo],[hi]] whisker offsets from the plotted elapsed value, or None."""
     if v not in VAR:
         return None
-    med, lo, hi = VAR[v]
+    med, lo, hi = VAR[v]["elapsed"]
     return [[med - lo], [hi - med]]
 
 
