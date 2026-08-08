@@ -34,6 +34,22 @@
 #ifndef SINGLE_KERNEL
 #define SINGLE_KERNEL 0
 #endif
+/* Device timing (-DDEVICE_TIMING=0 or 1, default 1, COMM_MODE=0 only):
+ *   CUDA events around the comm kernels, reported as [device] alongside the
+ *   rate. Events are recorded into a per-iteration pool and only converted to
+ *   milliseconds AFTER the timed region -- cudaEventElapsedTime is a blocking
+ *   driver call costing ~6 us, and calling it in the loop (as the original
+ *   instrumentation did) charged that to the measured wall clock: ~6 us/iter
+ *   for SINGLE_KERNEL and ~18 us/iter for the 3-phase path, i.e. -22% of the
+ *   reported rate at 1024^2 and -0.4% at 16384^2 (jobs 61344 / 61541).
+ *   Build with -DDEVICE_TIMING=0 for a provably uninstrumented binary. */
+#ifndef DEVICE_TIMING
+#define DEVICE_TIMING 1
+#endif
+#if COMM_MODE != 0
+#undef  DEVICE_TIMING
+#define DEVICE_TIMING 0
+#endif
 
 #define CUDA_CHECK(call) do {                                              \
     cudaError_t _e = (call);                                               \
@@ -468,11 +484,37 @@ int main(int argc, char **argv)
     /* CUDA-event instrumentation: pure GPU execution time of the communication
        kernels (the cross-GPU transposed writes), excluding host-side MPI_Barrier
        and launch latency. Lets us separate "GPU busy" from "waiting at barriers"
-       and confirm the wall-clock rate against actual device work. */
-    cudaEvent_t evc0, evc1;
-    CUDA_CHECK(cudaEventCreate(&evc0));
-    CUDA_CHECK(cudaEventCreate(&evc1));
+       and confirm the wall-clock rate against actual device work.
+
+       Nothing here may touch the host clock inside the timed loop, so the loop
+       only calls cudaEventRecord (asynchronous, enqueued on the stream) into a
+       pool holding one pair per comm kernel per timed iteration. The blocking
+       cudaEventElapsedTime reads happen once, after the timed region closes. */
     double dev_comm_us = 0.0;   /* summed over timed iterations, this rank */
+#if DEVICE_TIMING
+    /* Comm kernels per timed iteration: one for SINGLE_KERNEL, else one per
+       remote phase. P==1 has no comm kernel at all -- keep the pool non-empty
+       so the allocation and the post-loop scan stay unconditional. */
+#if SINGLE_KERNEL
+    const int ev_per_iter = (P > 1) ? 1 : 0;
+#else
+    const int ev_per_iter = (P > 1) ? (P - 1) : 0;
+#endif
+    const size_t n_ev = (size_t)iterations * (size_t)(ev_per_iter > 0 ? ev_per_iter : 1);
+    cudaEvent_t *evc0 = (cudaEvent_t *)malloc(n_ev * sizeof(cudaEvent_t));
+    cudaEvent_t *evc1 = (cudaEvent_t *)malloc(n_ev * sizeof(cudaEvent_t));
+    if (!evc0 || !evc1) {
+        fprintf(stderr, "rank %d: cannot allocate %zu CUDA event pairs\n", my_ID, n_ev);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    for (size_t e = 0; e < n_ev; e++) {
+        CUDA_CHECK(cudaEventCreate(&evc0[e]));
+        CUDA_CHECK(cudaEventCreate(&evc1[e]));
+    }
+    /* Events are recorded only on timed iterations, so a slot is written at
+       most once and ev_used counts exactly how many pairs to read back. */
+    size_t ev_used = 0;
+#endif
 
     for (int iter = 0; iter < warmup + iterations; iter++) {
 
@@ -494,17 +536,18 @@ int main(int argc, char **argv)
             CUDA_CHECK(cudaStreamSynchronize(stream));
             MPI_Barrier(MPI_COMM_WORLD);
 
-            CUDA_CHECK(cudaEventRecord(evc0, stream));
+#if DEVICE_TIMING
+            const int timed = (iter >= warmup);
+            if (timed) CUDA_CHECK(cudaEventRecord(evc0[ev_used], stream));
+#endif
             transpose_all_peers_kernel<<<tgrd_all, tblk, 0, stream>>>(
                 peer_B_dev, order, colstart,
                 A_d, order, Bo, ACCUMULATE, my_ID, P);
-            CUDA_CHECK(cudaEventRecord(evc1, stream));
+#if DEVICE_TIMING
+            if (timed) CUDA_CHECK(cudaEventRecord(evc1[ev_used++], stream));
+#endif
 
             CUDA_CHECK(cudaStreamSynchronize(stream));
-            if (iter >= warmup) {
-                float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
-                dev_comm_us += (double)ms * 1.0e3;
-            }
             MPI_Barrier(MPI_COMM_WORLD);
         }
 #else
@@ -528,30 +571,28 @@ int main(int argc, char **argv)
                               MPI_COMM_WORLD, &reqs[nreq++]);
                 }
 
+#if DEVICE_TIMING
+                const int timed = (iter >= warmup);
+                if (timed) CUDA_CHECK(cudaEventRecord(evc0[ev_used], stream));
+#endif
                 if (ipc_ok_B[send_to]) {
-                    CUDA_CHECK(cudaEventRecord(evc0, stream));
                     transpose_kernel<<<tgrd, tblk, 0, stream>>>(
                         peer_B[send_to], order, colstart,
                         A_d, order, send_to * Bo,
                         Bo, ACCUMULATE);
-                    CUDA_CHECK(cudaEventRecord(evc1, stream));
+#if DEVICE_TIMING
+                    if (timed) CUDA_CHECK(cudaEventRecord(evc1[ev_used++], stream));
+#endif
                     CUDA_CHECK(cudaStreamSynchronize(stream));
-                    if (iter >= warmup) {
-                        float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
-                        dev_comm_us += (double)ms * 1.0e3;
-                    }
                 } else {
-                    CUDA_CHECK(cudaEventRecord(evc0, stream));
                     transpose_kernel<<<tgrd, tblk, 0, stream>>>(
                         fb_send, Bo, 0,
                         A_d, order, send_to * Bo,
                         Bo, 0);
-                    CUDA_CHECK(cudaEventRecord(evc1, stream));
+#if DEVICE_TIMING
+                    if (timed) CUDA_CHECK(cudaEventRecord(evc1[ev_used++], stream));
+#endif
                     CUDA_CHECK(cudaStreamSynchronize(stream));
-                    if (iter >= warmup) {
-                        float ms = 0.f; CUDA_CHECK(cudaEventElapsedTime(&ms, evc0, evc1));
-                        dev_comm_us += (double)ms * 1.0e3;
-                    }
                     MPI_Isend(fb_send, blk_count, MPI_DOUBLE, send_to, phase,
                               MPI_COMM_WORLD, &reqs[nreq++]);
                 }
@@ -658,6 +699,22 @@ int main(int argc, char **argv)
     double local_time = MPI_Wtime() - t0;
     double max_time;
     MPI_Reduce(&local_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+#if DEVICE_TIMING
+    /* Clock is stopped; the blocking event reads are now off the critical path.
+       cudaDeviceSynchronize above guarantees every recorded event completed. */
+    for (size_t e = 0; e < ev_used; e++) {
+        float ms = 0.f;
+        CUDA_CHECK(cudaEventElapsedTime(&ms, evc0[e], evc1[e]));
+        dev_comm_us += (double)ms * 1.0e3;
+    }
+    for (size_t e = 0; e < n_ev; e++) {
+        CUDA_CHECK(cudaEventDestroy(evc0[e]));
+        CUDA_CHECK(cudaEventDestroy(evc1[e]));
+    }
+    free(evc0);
+    free(evc1);
+#endif
     double dev_comm_us_max;
     MPI_Reduce(&dev_comm_us, &dev_comm_us_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
@@ -696,7 +753,7 @@ int main(int argc, char **argv)
             double avgtime = max_time / (double)iterations;
             printf("Rate (MB/s): %lf  Avg time (s): %lf\n",
                    1.0e-06 * bytes / avgtime, avgtime);
-#if COMM_MODE == 0
+#if DEVICE_TIMING
             /* Pure GPU comm-kernel time (CUDA events) vs wall time: the gap is
                host-side MPI_Barrier / launch latency, not GPU work. */
             double dev_us = dev_comm_us_max / (double)iterations;
@@ -710,8 +767,7 @@ int main(int argc, char **argv)
     }
 
     /* --- Cleanup --- */
-    CUDA_CHECK(cudaEventDestroy(evc0));
-    CUDA_CHECK(cudaEventDestroy(evc1));
+    /* (the event pool is destroyed right after its post-loop readback) */
     CUDA_CHECK(cudaStreamDestroy(stream));
 
 #if COMM_MODE == 0
