@@ -11,6 +11,11 @@
 //   ghost_L = copy of left neighbor's right edge  (or boundary=0)
 //   ghost_R = copy of right neighbor's left edge   (or boundary=0)
 //
+// The receive buffers a peer writes into are double-buffered (slot iter%2).
+// STENCIL_SYNC selects the completion handshake: "neighbor" (default) trades a
+// zero-byte token with each neighbour, "barrier" uses MPI_Barrier. See the long
+// comment at the handshake in the main loop.
+//
 // Compile: nvcc -o stencil_large_ipc stencil_large_contiguous.cu -lmpi
 // Run:     mpirun -np 4 ./stencil_large_ipc
 
@@ -18,6 +23,7 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <cmath>
 
 static int local_rank_for_gpu(MPI_Comm comm, int world_rank)
@@ -139,13 +145,58 @@ int main(int argc, char** argv)
     size_t grid_size  = (size_t)N * pitch * sizeof(double);
     size_t ghost_size = (size_t)N * sizeof(double);
 
+    // Completion handshake for the one-sided path. Default is the global
+    // MPI_Barrier; STENCIL_SYNC=neighbor selects the neighbour-only token
+    // exchange.
+    //
+    // The barrier is the default DELIBERATELY, and must stay that way until the
+    // token path has been benchmarked and validated on this machine:
+    //   - Every stencil number in the paper (job 59853) is a barrier run.
+    //   - The FIRST token attempt was reverted in 445c39a as RACY: at 8 ranks it
+    //     produced L2 3.7550293292 (1024^2) and 5.0563202266 (4096^2) against
+    //     the correct 5.1449605829, while every barrier run matched. A token
+    //     proves the neighbour finished writing, not unpacking.
+    //   - It was also NOT faster: 4 ranks, barrier vs token, 16384^2 36.89 vs
+    //     37.04 ms and 32768^2 135.29 vs 135.45 ms. OpenMPI's intra-node barrier
+    //     beats four Isend/Irecv plus a Waitall.
+    // The double-buffered slots below (slot = iter & 1) are what this second
+    // attempt adds to close that race -- iteration i+1 writes the other slot, so
+    // it cannot clobber iteration i while a neighbour is still reading it. That
+    // is a plausible fix, not a verified one: as of this commit the token path
+    // has never been run. Flip the default only alongside a job log showing
+    // matching L2 at 8 ranks.
+    bool neighbor_sync = false;
+    {
+        const char* s = getenv("STENCIL_SYNC");
+        if (s && *s) {
+            if (strcmp(s, "barrier") == 0)       neighbor_sync = false;
+            else if (strcmp(s, "neighbor") == 0 ||
+                     strcmp(s, "neighbour") == 0) neighbor_sync = true;
+            else if (rank == 0)
+                printf("WARNING: unknown STENCIL_SYNC=\"%s\", using neighbor\n", s);
+        }
+    }
+
+    // Receive buffers are double-buffered; a rank writes into slot iter%2 of its
+    // neighbour's buffer. The neighbour-only handshake NEEDS this for
+    // correctness (see the main loop). Both slots are allocated in barrier mode
+    // too -- barrier mode only ever touches slot 0, but keeping the allocation
+    // byte-identical means a barrier-vs-neighbour A/B isolates the handshake and
+    // does not also measure a different setup phase.
+    const int RECV_SLOTS = 2;
+    const size_t recv_win_size = ghost_size * RECV_SLOTS;
+
     if (rank == 0) {
         printf("GPUs: %d\n", size);
         printf("Global grid: %d x %d = %.2f million cells\n",
                N, TOTAL_W, (double)N * TOTAL_W / 1e6);
         printf("Per GPU: %d x %d + 2 ghost columns\n", N, W);
         printf("Grid memory: %.2f MB per GPU\n", grid_size / 1e6);
-        printf("Ghost window: %.2f KB (contiguous)\n", ghost_size / 1e3);
+        printf("Ghost window: %.2f KB (contiguous, %d slots of %.2f KB)\n",
+               recv_win_size / 1e3, RECV_SLOTS, ghost_size / 1e3);
+        printf("Completion handshake: %s\n",
+               neighbor_sync ? "neighbour-only token exchange"
+                             : "global MPI_Barrier");
     }
 
     // ------------------------------------------------------------------------
@@ -170,9 +221,9 @@ int main(int argc, char** argv)
         MPI_Info_set(ipc_info, "cuda_ipc", "1");
         MPI_Barrier(MPI_COMM_WORLD);          // align ranks before timing
         const double _t0_alloc = MPI_Wtime();
-        MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
+        MPI_Win_allocate(recv_win_size, 1, ipc_info, MPI_COMM_WORLD,
                          &d_ghost_recv_L, &win_recv_L);
-        MPI_Win_allocate(ghost_size, 1, ipc_info, MPI_COMM_WORLD,
+        MPI_Win_allocate(recv_win_size, 1, ipc_info, MPI_COMM_WORLD,
                          &d_ghost_recv_R, &win_recv_R);
         // Send-side buffers belong to this phase too: the comparators time all
         // four of their halo buffers, so timing only the two windows here would
@@ -187,8 +238,8 @@ int main(int argc, char** argv)
     // Initialize
     cudaMemset(d_old, 0, grid_size);
     cudaMemset(d_new, 0, grid_size);
-    cudaMemset(d_ghost_recv_L, 0, ghost_size);
-    cudaMemset(d_ghost_recv_R, 0, ghost_size);
+    cudaMemset(d_ghost_recv_L, 0, recv_win_size);
+    cudaMemset(d_ghost_recv_R, 0, recv_win_size);
 
     // Heat source in center of global grid
     int global_center_col = TOTAL_W / 2;
@@ -304,18 +355,44 @@ int main(int argc, char** argv)
             cudaEventRecord(ev_start);
         }
 
+        // Receive-buffer slot for this iteration. Every rank runs the same
+        // warmup+iterations count, so neighbours always agree on the parity.
+        // Barrier mode pins slot 0 so it behaves exactly as it did before.
+        const int slot = neighbor_sync ? (iter & 1) : 0;
+        double* my_recv_L  = d_ghost_recv_L + (size_t)slot * N;
+        double* my_recv_R  = d_ghost_recv_R + (size_t)slot * N;
+        double* peer_dst_L = ipc_ok_L ? peer_recv_L + (size_t)slot * N : NULL;
+        double* peer_dst_R = ipc_ok_R ? peer_recv_R + (size_t)slot * N : NULL;
+
         // === GHOST EXCHANGE ===
         // tag 0 = data flowing rightward (X's right edge -> X+1's left ghost)
         // tag 1 = data flowing leftward  (X's left edge  -> X-1's right ghost)
+        // tag 20 = zero-byte token, "your L slot is filled"  (sent rightward)
+        // tag 21 = zero-byte token, "your R slot is filled"  (sent leftward)
+        // At most two requests per side (data pair on a fallback side, token
+        // pair on an IPC side), so four in flight.
         MPI_Request greqs[4]; int ngreq = 0;
 
         // Post fallback receives before anyone might send
         if (left_rank >= 0 && !ipc_ok_L) {
-            MPI_Irecv(d_ghost_recv_L, N, MPI_DOUBLE, left_rank, 0,
+            MPI_Irecv(my_recv_L, N, MPI_DOUBLE, left_rank, 0,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
         if (right_rank >= 0 && !ipc_ok_R) {
-            MPI_Irecv(d_ghost_recv_R, N, MPI_DOUBLE, right_rank, 1,
+            MPI_Irecv(my_recv_R, N, MPI_DOUBLE, right_rank, 1,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+
+        // Post the token receives up front so a neighbour's token can land while
+        // we are still packing, instead of only once we go looking for it. Only
+        // IPC sides need one: a fallback side's data Isend/Irecv already carries
+        // its own completion signal.
+        if (neighbor_sync && ipc_ok_L) {
+            MPI_Irecv(NULL, 0, MPI_BYTE, left_rank, 20,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+        if (neighbor_sync && ipc_ok_R) {
+            MPI_Irecv(NULL, 0, MPI_BYTE, right_rank, 21,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
 
@@ -325,7 +402,7 @@ int main(int argc, char** argv)
                 d_old, d_ghost_send_L, N, pitch, 1
             );
             if (ipc_ok_L) {
-                cudaMemcpyAsync(peer_recv_L, d_ghost_send_L, ghost_size,
+                cudaMemcpyAsync(peer_dst_L, d_ghost_send_L, ghost_size,
                                 cudaMemcpyDeviceToDevice);
             }
         }
@@ -336,7 +413,7 @@ int main(int argc, char** argv)
                 d_old, d_ghost_send_R, N, pitch, W
             );
             if (ipc_ok_R) {
-                cudaMemcpyAsync(peer_recv_R, d_ghost_send_R, ghost_size,
+                cudaMemcpyAsync(peer_dst_R, d_ghost_send_R, ghost_size,
                                 cudaMemcpyDeviceToDevice);
             }
         }
@@ -351,6 +428,20 @@ int main(int argc, char** argv)
             MPI_Isend(d_ghost_send_R, N, MPI_DOUBLE, right_rank, 0,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
+
+        // The cudaDeviceSynchronize above means my IPC writes have landed, so
+        // each neighbour may now be told its slot is filled. My left edge went
+        // into the left neighbour's R slot (tag 21); my right edge went into the
+        // right neighbour's L slot (tag 20).
+        if (neighbor_sync && ipc_ok_L) {
+            MPI_Isend(NULL, 0, MPI_BYTE, left_rank, 21,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+        if (neighbor_sync && ipc_ok_R) {
+            MPI_Isend(NULL, 0, MPI_BYTE, right_rank, 20,
+                      MPI_COMM_WORLD, &greqs[ngreq++]);
+        }
+
         if (ngreq > 0) MPI_Waitall(ngreq, greqs, MPI_STATUSES_IGNORE);
 
         // Completion handshake. A rank writes straight into its neighbour's
@@ -361,41 +452,59 @@ int main(int argc, char** argv)
         // self-synchronising). It must therefore be disclosed as a
         // synchronisation asymmetry when comparing against them.
         //
-        // DO NOT replace this with a neighbour-only handshake. That was tried
-        // (job 60200) and it is RACY: exchanging a token with each neighbour
-        // proves the neighbour finished WRITING, but not that it finished
-        // UNPACKING. Without a global sync, ranks drift cumulatively, and a
-        // rank can begin iteration i+1's write into a neighbour's receive
-        // buffer while that neighbour is still reading iteration i out of it.
-        // It failed exactly where drift is largest and compute slack smallest:
-        // at 8 ranks, 1024^2 gave L2 3.7550293292 and 4096^2 gave 5.0563202266
-        // against the correct 5.1449605829, while every barrier run matched.
+        // A five-point stencil only depends on its two neighbours, so the
+        // handshake above is two zero-byte messages per side rather than a
+        // global barrier, which synchronises far more than the dependency graph
+        // requires and whose cost grows with rank count.
         //
-        // It is also not faster. Same job, IPC time, barrier vs neighbour-token:
-        // 4 ranks 16384^2 36.89 vs 37.04 ms; 32768^2 135.29 vs 135.45 ms. The
-        // barrier is marginally CHEAPER -- OpenMPI's intra-node barrier beats
-        // four Isend/Irecv plus a Waitall.
+        // THE TOKEN ALONE IS NOT ENOUGH -- it is why the double buffering
+        // exists. A token proves the neighbour finished WRITING my slot; it says
+        // nothing about whether the neighbour finished UNPACKING the slot I am
+        // about to write. A single-buffered version of exactly this scheme was
+        // tried (commit 8d913ba, job 60200) and is RACY: ranks drift, and a rank
+        // starts iteration i+1's write into a neighbour's buffer while that
+        // neighbour is still reading iteration i out of it. It broke where drift
+        // is largest and compute slack smallest -- at 8 ranks, 1024^2 gave L2
+        // 3.7550293292 and 4096^2 gave 5.0563202266 against the correct
+        // 5.1449605829, while every barrier run matched.
         //
-        // Those <=0.4% differences compare the two handshake IMPLEMENTATIONS
-        // with each other. They do NOT quantify what this handshake costs: that
-        // would need a run with no handshake, which cannot be correct. So the
-        // asymmetry against the self-synchronising Sendrecv comparators is real
-        // but its magnitude is unbounded by this experiment. Do not cite 0.4%
-        // as the handshake's cost.
+        // Alternating slots closes that write-after-read hazard, and two slots
+        // are provably sufficient:
+        //   - Within iteration i, my write to slot i%2 completed before I sent
+        //     the token, and the neighbour's unpack of slot i%2 is enqueued only
+        //     after it received that token.
+        //   - My iteration i+1 write targets slot (i+1)%2, a different buffer
+        //     from the slot the neighbour reads at iteration i. No conflict.
+        //   - My iteration i+2 write returns to slot i%2. To get there I had to
+        //     clear iteration i+1's Waitall, which required the neighbour's
+        //     i+1 token, which it sent only after its own cudaDeviceSynchronize
+        //     at iteration i+1 -- and that sync is device-wide, so it guarantees
+        //     the neighbour's iteration i unpack of slot i%2 had finished.
+        // So a rank can run at most one iteration ahead of its neighbour's
+        // write-completion point, and the slot it reuses is always already read.
         //
-        // A correct neighbour-only scheme needs double-buffered receive buffers
-        // or a second post-unpack handshake: more complexity for no gain.
-        MPI_Barrier(MPI_COMM_WORLD);
+        // Set STENCIL_SYNC=barrier for the old global barrier. Both modes are
+        // correct; keep the A/B available because on one node the barrier was
+        // measured marginally CHEAPER (job 60200, 4 ranks: 36.89 vs 37.04 ms at
+        // 16384^2, 135.29 vs 135.45 at 32768^2) -- OpenMPI's intra-node barrier
+        // beat four Isend/Irecv plus a Waitall. Those numbers predate the
+        // double buffering and compare the two handshake IMPLEMENTATIONS, not
+        // the cost of having a handshake at all: quantifying that needs a run
+        // with no handshake, which cannot be correct. Do not cite <=0.4% as the
+        // handshake's cost. The expected payoff for the neighbour path is at
+        // higher rank counts and across nodes, where barrier cost scales and
+        // the neighbour cost does not.
+        if (!neighbor_sync) MPI_Barrier(MPI_COMM_WORLD);
 
         // Unpack received ghosts into my grid
         if (left_rank >= 0) {
             unpack_ghost<<<copy_blocks, copy_threads>>>(
-                d_ghost_recv_L, d_old, N, pitch, 0       // ghost col 0
+                my_recv_L, d_old, N, pitch, 0       // ghost col 0
             );
         }
         if (right_rank >= 0) {
             unpack_ghost<<<copy_blocks, copy_threads>>>(
-                d_ghost_recv_R, d_old, N, pitch, W + 1   // ghost col W+1
+                my_recv_R, d_old, N, pitch, W + 1   // ghost col W+1
             );
         }
 

@@ -6,8 +6,15 @@
 //
 // Key differences vs. the IPC version:
 //   - Recv buffers live in the NVSHMEM symmetric heap (nvshmem_malloc).
-//   - Pack -> nvshmemx_double_put_on_stream -> barrier -> unpack (all on a stream).
+//   - Pack -> put(+signal) -> wait/barrier -> unpack (all on a stream).
 //   - No MPI windows, no manual IPC handle exchange.
+//
+// STENCIL_SYNC selects the completion handshake, mirroring stencil_ipc.cu so the
+// two one-sided variants stay synchronisation-matched:
+//   neighbor (default) -- put_signal to each neighbour, signal_wait_until on the
+//                         two incoming signals. Recv buffers are double-buffered
+//                         (slot iter%2); see the handshake in the main loop.
+//   barrier            -- plain put plus nvshmemx_barrier_all_on_stream.
 //
 // Compile (adjust paths to your NVSHMEM install):
 //   nvcc -ccbin mpicxx -rdc=true -O3 -arch=sm_90 \
@@ -24,6 +31,8 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cstdint>
 #include <cmath>
 
 static int local_rank_for_gpu(MPI_Comm comm, int world_rank)
@@ -151,13 +160,41 @@ int main(int argc, char** argv)
     size_t grid_size  = (size_t)N * pitch * sizeof(double);
     size_t ghost_size = (size_t)N * sizeof(double);
 
+    // Completion handshake, same env var and same default as stencil_ipc.cu:
+    // barrier by default, because the put_signal/wait path below has never been
+    // run. See the long comment at the corresponding line in stencil_ipc.cu for
+    // why -- the two variants must stay synchronisation-matched or the IPC-vs-
+    // NVSHMEM comparison stops being apples-to-apples.
+    bool neighbor_sync = false;
+    {
+        const char* s = getenv("STENCIL_SYNC");
+        if (s && *s) {
+            if (strcmp(s, "barrier") == 0)       neighbor_sync = false;
+            else if (strcmp(s, "neighbor") == 0 ||
+                     strcmp(s, "neighbour") == 0) neighbor_sync = true;
+            else if (mype == 0)
+                printf("WARNING: unknown STENCIL_SYNC=\"%s\", using neighbor\n", s);
+        }
+    }
+
+    // Receive slots, as in stencil_ipc.cu: a PE puts into slot iter%2 of its
+    // neighbour's buffer. Needed for correctness under the neighbour handshake;
+    // allocated in barrier mode too (which only touches slot 0) so the symmetric
+    // heap footprint is identical and an A/B measures only the handshake.
+    const int RECV_SLOTS = 2;
+    const size_t recv_buf_size = ghost_size * RECV_SLOTS;
+
     if (mype == 0) {
         printf("PEs: %d\n", npes);
         printf("Global grid: %d x %d = %.2f million cells\n",
                N, TOTAL_W, (double)N * TOTAL_W / 1e6);
         printf("Per GPU: %d x %d + 2 ghost columns\n", N, W);
         printf("Grid memory: %.2f MB per GPU\n", grid_size / 1e6);
-        printf("Ghost window: %.2f KB (contiguous)\n", ghost_size / 1e3);
+        printf("Ghost window: %.2f KB (contiguous, %d slots of %.2f KB)\n",
+               recv_buf_size / 1e3, RECV_SLOTS, ghost_size / 1e3);
+        printf("Completion handshake: %s\n",
+               neighbor_sync ? "neighbour-only put_signal/wait"
+                             : "global nvshmem barrier");
     }
 
     // ------------------------------------------------------------------------
@@ -172,9 +209,19 @@ int main(int argc, char** argv)
     //   recv buffers MUST be in the symmetric heap (peers put into them)
     //   send buffers can be private — they are only put-source
     // ------------------------------------------------------------------------
-    double *d_ghost_recv_L = (double*)nvshmem_malloc(ghost_size);
-    double *d_ghost_recv_R = (double*)nvshmem_malloc(ghost_size);
-    if (!d_ghost_recv_L || !d_ghost_recv_R) {
+    double *d_ghost_recv_L = (double*)nvshmem_malloc(recv_buf_size);
+    double *d_ghost_recv_R = (double*)nvshmem_malloc(recv_buf_size);
+
+    // Signal words for the neighbour handshake. These must also live in the
+    // symmetric heap -- a put_signal updates the signal on the TARGET PE, so the
+    // address has to be symmetric like the data buffer. Two per PE:
+    //   d_sig[SIG_L] is raised by my LEFT neighbour when it has filled my L slot
+    //   d_sig[SIG_R] is raised by my RIGHT neighbour when it has filled my R slot
+    // Always allocated (16 bytes) so barrier mode has the same heap layout.
+    enum { SIG_L = 0, SIG_R = 1, NUM_SIG = 2 };
+    uint64_t *d_sig = (uint64_t*)nvshmem_malloc(NUM_SIG * sizeof(uint64_t));
+
+    if (!d_ghost_recv_L || !d_ghost_recv_R || !d_sig) {
         fprintf(stderr, "[PE %d] nvshmem_malloc failed\n", mype);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
@@ -186,8 +233,12 @@ int main(int argc, char** argv)
     // Initialize
     cudaMemset(d_old, 0, grid_size);
     cudaMemset(d_new, 0, grid_size);
-    cudaMemset(d_ghost_recv_L, 0, ghost_size);
-    cudaMemset(d_ghost_recv_R, 0, ghost_size);
+    cudaMemset(d_ghost_recv_L, 0, recv_buf_size);
+    cudaMemset(d_ghost_recv_R, 0, recv_buf_size);
+    // Signals start at 0 and only ever increase; iteration i waits for i+1, so
+    // they are never reset inside the loop. The nvshmem_barrier_all before the
+    // loop is what makes this zeroing visible to every peer before the first put.
+    cudaMemset(d_sig, 0, NUM_SIG * sizeof(uint64_t));
 
     // Heat source in center of global grid
     int global_center_col = TOTAL_W / 2;
@@ -268,47 +319,120 @@ int main(int argc, char** argv)
 
         // === GHOST EXCHANGE ===
 
-        // Pack my LEFT edge (col 1) and put it into left neighbor's R recv buffer
+        // Receive slot for this iteration. Every PE runs the same
+        // warmup+iterations count, so neighbours always agree on the parity.
+        // Barrier mode pins slot 0 and behaves exactly as it did before.
+        // The symmetric heap is laid out identically on every PE, so offsetting
+        // my own pointer names the same slot inside the peer's buffer.
+        const int slot = neighbor_sync ? (iter & 1) : 0;
+        double* slot_L = d_ghost_recv_L + (size_t)slot * N;
+        double* slot_R = d_ghost_recv_R + (size_t)slot * N;
+
+        // Signal value for this iteration: monotonically increasing, so a waiter
+        // uses CMP_GE and a neighbour that has run ahead still satisfies it.
+        const uint64_t sigval = (uint64_t)iter + 1;
+
+        // Pack my LEFT edge (col 1) and put it into left neighbor's R recv slot
         if (left_pe >= 0) {
             pack_edge<<<copy_blocks, copy_threads, 0, stream>>>(
                 d_old, d_ghost_send_L, N, pitch, 1
             );
-            nvshmemx_double_put_on_stream(
-                d_ghost_recv_R,   // symmetric: written into left_pe's R buffer
-                d_ghost_send_L,
-                (size_t)N,
-                left_pe,
-                stream
-            );
+            if (neighbor_sync) {
+                // put_signal raises left_pe's SIG_R only after this payload has
+                // been delivered to it -- that ordering guarantee is the whole
+                // reason to use put_signal rather than put followed by a
+                // separate signal op.
+                nvshmemx_double_put_signal_on_stream(
+                    slot_R,           // symmetric: left_pe's R slot
+                    d_ghost_send_L,
+                    (size_t)N,
+                    &d_sig[SIG_R],    // symmetric: left_pe's SIG_R
+                    sigval,
+                    NVSHMEM_SIGNAL_SET,
+                    left_pe,
+                    stream
+                );
+            } else {
+                nvshmemx_double_put_on_stream(
+                    slot_R, d_ghost_send_L, (size_t)N, left_pe, stream
+                );
+            }
         }
 
-        // Pack my RIGHT edge (col W) and put it into right neighbor's L recv buffer
+        // Pack my RIGHT edge (col W) and put it into right neighbor's L recv slot
         if (right_pe >= 0) {
             pack_edge<<<copy_blocks, copy_threads, 0, stream>>>(
                 d_old, d_ghost_send_R, N, pitch, W
             );
-            nvshmemx_double_put_on_stream(
-                d_ghost_recv_L,   // symmetric: written into right_pe's L buffer
-                d_ghost_send_R,
-                (size_t)N,
-                right_pe,
-                stream
-            );
+            if (neighbor_sync) {
+                nvshmemx_double_put_signal_on_stream(
+                    slot_L,           // symmetric: right_pe's L slot
+                    d_ghost_send_R,
+                    (size_t)N,
+                    &d_sig[SIG_L],    // symmetric: right_pe's SIG_L
+                    sigval,
+                    NVSHMEM_SIGNAL_SET,
+                    right_pe,
+                    stream
+                );
+            } else {
+                nvshmemx_double_put_on_stream(
+                    slot_L, d_ghost_send_R, (size_t)N, right_pe, stream
+                );
+            }
         }
 
-        // Global completion + ordering on the stream.
-        // (Equivalent to the cudaDeviceSynchronize + MPI_Barrier pair in the IPC version.)
-        nvshmemx_barrier_all_on_stream(stream);
+        // Completion handshake, on the stream either way.
+        //
+        // A five-point stencil depends only on its two neighbours, so waiting on
+        // the two incoming signals is the minimum sufficient sync; a global
+        // barrier synchronises the whole PE set and its cost grows with PE count.
+        // This mirrors the zero-byte token exchange in stencil_ipc.cu, and the
+        // two variants must stay matched: if only one of them dropped its
+        // barrier, an IPC-vs-NVSHMEM comparison would be measuring which variant
+        // got the optimisation rather than which transport is faster.
+        //
+        // THE SIGNAL ALONE IS NOT ENOUGH -- it is why the slots alternate. A
+        // signal proves the neighbour finished WRITING my slot; it says nothing
+        // about whether the neighbour finished UNPACKING the slot I am about to
+        // write. The single-buffered form of this scheme was already shown to be
+        // racy on the IPC side (commit 8d913ba, job 60200: np=8 1024^2 gave L2
+        // 3.7550293292 against the correct 5.1449605829).
+        //
+        // Two slots are sufficient, with stream order supplying here what the
+        // device-wide cudaDeviceSynchronize supplies in the IPC version. My
+        // iteration i+2 put reuses slot i%2; it is enqueued after my iteration
+        // i+1 wait cleared, which required the neighbour's signal value i+2,
+        // which the neighbour raised from its own iteration i+1 put -- and on the
+        // neighbour's single in-order stream that put executes only after its
+        // iteration i unpack of slot i%2 has completed. So the slot I reuse has
+        // always already been read.
+        if (neighbor_sync) {
+            if (left_pe >= 0) {
+                nvshmemx_signal_wait_until_on_stream(
+                    &d_sig[SIG_L], NVSHMEM_CMP_GE, sigval, stream
+                );
+            }
+            if (right_pe >= 0) {
+                nvshmemx_signal_wait_until_on_stream(
+                    &d_sig[SIG_R], NVSHMEM_CMP_GE, sigval, stream
+                );
+            }
+        } else {
+            // (Equivalent to the cudaDeviceSynchronize + MPI_Barrier pair in the
+            // IPC version's barrier mode.)
+            nvshmemx_barrier_all_on_stream(stream);
+        }
 
         // Unpack received ghosts into my grid
         if (left_pe >= 0) {
             unpack_ghost<<<copy_blocks, copy_threads, 0, stream>>>(
-                d_ghost_recv_L, d_old, N, pitch, 0
+                slot_L, d_old, N, pitch, 0
             );
         }
         if (right_pe >= 0) {
             unpack_ghost<<<copy_blocks, copy_threads, 0, stream>>>(
-                d_ghost_recv_R, d_old, N, pitch, W + 1
+                slot_R, d_old, N, pitch, W + 1
             );
         }
 
@@ -380,6 +504,7 @@ int main(int argc, char** argv)
 
     nvshmem_free(d_ghost_recv_L);
     nvshmem_free(d_ghost_recv_R);
+    nvshmem_free(d_sig);
     cudaFree(d_old);
     cudaFree(d_new);
     cudaFree(d_ghost_send_L);
