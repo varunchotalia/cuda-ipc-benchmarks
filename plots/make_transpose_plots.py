@@ -168,10 +168,7 @@ panel("accum", IPC_SERIES, "IPC — With Accumulation (B += A\u1d40)",
       os.path.join(OUT, "transpose_ipc_accum.pdf"))
 panel("noaccum", IPC_SERIES, "IPC — No Accumulation (B = A\u1d40)",
       os.path.join(OUT, "transpose_ipc_noaccum.pdf"))
-# Only the NVSHMEM series are keyed here. The four IPC series use the same
-# colours and dash patterns as the two IPC panels, so they read across from
-# those; keying all seven made the box dominate the plot.
+# Key every series here so the comparison panel is self-contained; readers do
+# not have to cross-reference the two IPC panels to decode its curves.
 panel("noaccum", VS_SERIES, "IPC vs NVSHMEM — No Accumulation",
-      os.path.join(OUT, "transpose_ipc_vs_nvshmem.pdf"), ncol=1,
-      legend_only={"NVSHMEM direct", "NVSHMEM single-K",
-                   "NVSHMEM buffered"})
+      os.path.join(OUT, "transpose_ipc_vs_nvshmem.pdf"), ncol=1)
