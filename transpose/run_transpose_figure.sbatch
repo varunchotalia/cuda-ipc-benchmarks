@@ -57,6 +57,9 @@ export REPO=~/mpiwrap
 source $REPO/scripts/build_mpiwrap.sh
 MPIWRAP=$MPIWRAP_LIB
 NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
+# The nvwulf openmpi module never exports MPI_HOME; without this the NVINC/NVLIB
+# lines below expand to -I/include -L/lib and link only by accident off CPATH.
+MPI_HOME="${MPI_HOME:-$(dirname "$(dirname "$(command -v mpicc)")")}"
 export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
 ARCH="-gencode arch=compute_90,code=sm_90"

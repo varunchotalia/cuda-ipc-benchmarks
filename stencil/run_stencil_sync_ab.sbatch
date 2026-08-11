@@ -75,6 +75,12 @@ export REPO=~/mpiwrap
 source $REPO/scripts/build_mpiwrap.sh
 MPIWRAP=$MPIWRAP_LIB
 NVSHMEM_HOME=/lustre/nvwulf/software/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem
+# The nvwulf openmpi module only prepends PATH/CPATH/LIBRARY_PATH -- it never
+# exports MPI_HOME (only scripts/env_ptyche.sh does, for the GB200 side). Under
+# `set -u` a bare $MPI_HOME aborts the job in seconds: that is exactly how 61948
+# and 61945 died. The older scripts have no `set -u`, so it expanded to empty and
+# they linked by accident off CPATH/LIBRARY_PATH. Derive the prefix instead.
+MPI_HOME="${MPI_HOME:-$(dirname "$(dirname "$(command -v mpicc)")")}"
 export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
 ARCH="-gencode arch=compute_90,code=sm_90"
