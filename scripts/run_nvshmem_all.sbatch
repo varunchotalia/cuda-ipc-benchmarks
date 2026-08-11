@@ -16,6 +16,9 @@ export LD_LIBRARY_PATH=$NVSHMEM_HOME/lib:$LD_LIBRARY_PATH
 export NVSHMEM_BOOTSTRAP=MPI
 
 SRC=transpose/transpose_nvshmem.cu
+# The nvwulf openmpi module never exports MPI_HOME; without this the two lines
+# below expand to -I/include -L/lib and link only by accident off CPATH.
+MPI_HOME="${MPI_HOME:-$(dirname "$(dirname "$(command -v mpicc)")")}"
 INC="-I$NVSHMEM_HOME/include -I$MPI_HOME/include"
 LIB="$NVSHMEM_HOME/lib/libnvshmem_device.a -L$NVSHMEM_HOME/lib -lnvshmem_host -L$MPI_HOME/lib -lmpi"
 ARCH="-gencode arch=compute_90,code=sm_90"
