@@ -155,6 +155,9 @@ __global__ void transpose_kernel(
  * Grid: (tiles_x, tiles_y, num_peers)
  * ========================================================================== */
 #if COMM_MODE == 0 && SINGLE_KERNEL
+/* Negative control for the verifier (TRANSPOSE_SKIP_PEER); -1 = normal run. */
+static int g_skip_send_to = -1;
+
 __global__ void transpose_all_peers_kernel(
     double ** __restrict__ peer_B_ptrs,   /* array of pointers to each peer's B */
     int dst_ld,                           /* stride of B = order */
@@ -168,7 +171,8 @@ __global__ void transpose_all_peers_kernel(
     int Bo,
     int accumulate,
     int my_ID,                            /* this rank's ID, to compute send_to inline */
-    int P)                                /* total number of ranks */
+    int P,                                /* total number of ranks */
+    int skip_send_to)                     /* negative control; -1 = normal run */
 {
     __shared__ double tile[TILE][TILE + 1];
 
@@ -196,6 +200,18 @@ __global__ void transpose_all_peers_kernel(
     }
 
     __syncthreads();
+
+    /* VALIDATOR NEGATIVE CONTROL (TRANSPOSE_SKIP_PEER) -- see the banner in
+       main(). This suppresses only the WRITE to one peer. The tile load, and
+       under ACCUMULATE the src[idx] += 1.0 bookkeeping, have already run above,
+       so the sole difference from a normal run is that one peer's block never
+       arrives. Returning any earlier would also perturb the local accumulate
+       accounting and make the verifier fail for the wrong reason, which would
+       tell us nothing about whether it inspects remote data.
+
+       send_to depends only on blockIdx.z, so this return is block-uniform and
+       cannot strand threads at the __syncthreads() above. */
+    if (send_to == skip_send_to) return;
 
     /* Write transposed tile to peer's B */
     double *dst = peer_B_ptrs[send_to];
@@ -479,6 +495,36 @@ int main(int argc, char **argv)
     }
     if (my_ID == 0) printf("Warmup iterations (untimed): %d\n", warmup);
 
+#if COMM_MODE == 0 && SINGLE_KERNEL
+    /* TRANSPOSE_SKIP_PEER=<rank>: negative control for the verifier.
+       "Solution validates" on every run is consistent both with a verifier that
+       checks remotely delivered data and with one that is blind to it, so a
+       pass alone proves nothing. This withholds one peer's block deliberately;
+       the run is EXPECTED to fail the check. If it still validates, the
+       verifier does not inspect remote arrivals and every prior pass is void.
+       Never set this for a measurement -- the banner below and the NEGATIVE
+       CONTROL verdict replace the rate line so a tainted run cannot be
+       mistaken for a real one. */
+    {
+        const char *s = getenv("TRANSPOSE_SKIP_PEER");
+        if (s && *s) {
+            char *end = NULL;
+            long v = strtol(s, &end, 10);
+            if (end == s || *end != '\0' || v < 0 || v >= P || (int)v == my_ID) {
+                if (my_ID == 0)
+                    fprintf(stderr, "FATAL: TRANSPOSE_SKIP_PEER=\"%s\" must be a "
+                            "peer rank in [0,%d) other than this rank\n", s, P);
+                MPI_Abort(MPI_COMM_WORLD, 3);
+            }
+            g_skip_send_to = (int)v;
+            if (my_ID == 0)
+                printf("*** NEGATIVE CONTROL ACTIVE: all writes to peer %d are "
+                       "suppressed; this run MUST NOT validate ***\n",
+                       g_skip_send_to);
+        }
+    }
+#endif
+
     double t0 = 0.0;
 
     /* CUDA-event instrumentation: pure GPU execution time of the communication
@@ -542,7 +588,7 @@ int main(int argc, char **argv)
 #endif
             transpose_all_peers_kernel<<<tgrd_all, tblk, 0, stream>>>(
                 peer_B_dev, order, colstart,
-                A_d, order, Bo, ACCUMULATE, my_ID, P);
+                A_d, order, Bo, ACCUMULATE, my_ID, P, g_skip_send_to);
 #if DEVICE_TIMING
             if (timed) CUDA_CHECK(cudaEventRecord(evc1[ev_used++], stream));
 #endif
@@ -748,6 +794,20 @@ int main(int argc, char **argv)
 
     if (my_ID == 0) {
         double abserr_per_elem = abserr_tot / ((double)order * order);
+#if COMM_MODE == 0 && SINGLE_KERNEL
+        if (g_skip_send_to >= 0) {
+            /* Control run: the only acceptable outcome is a FAILED check. */
+            if (abserr_per_elem < 1.0e-8)
+                printf("NEGATIVE CONTROL FAILED: peer %d was never written, yet "
+                       "the solution still validates -- the verifier does NOT "
+                       "check remotely delivered data\n", g_skip_send_to);
+            else
+                printf("NEGATIVE CONTROL PASSED: withholding peer %d gives "
+                       "per-element error %e against a 1.0e-8 threshold -- the "
+                       "verifier DOES check remotely delivered data\n",
+                       g_skip_send_to, abserr_per_elem);
+        } else
+#endif
         if (abserr_per_elem < 1.0e-8) {
             printf("Solution validates\n");
             double avgtime = max_time / (double)iterations;
