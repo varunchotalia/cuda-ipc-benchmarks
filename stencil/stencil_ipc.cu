@@ -12,9 +12,9 @@
 //   ghost_R = copy of right neighbor's left edge   (or boundary=0)
 //
 // The receive buffers a peer writes into are double-buffered (slot iter%2).
-// STENCIL_SYNC selects the completion handshake: "neighbor" (default) trades a
-// zero-byte token with each neighbour, "barrier" uses MPI_Barrier. See the long
-// comment at the handshake in the main loop.
+// STENCIL_SYNC selects the completion handshake: "barrier" (default) uses
+// MPI_Barrier, "neighbor" trades a zero-byte token with each neighbour. See the
+// long comment at the handshake in the main loop.
 //
 // Compile: nvcc -o stencil_large_ipc stencil_large_contiguous.cu -lmpi
 // Run:     mpirun -np 4 ./stencil_large_ipc
@@ -149,22 +149,31 @@ int main(int argc, char** argv)
     // MPI_Barrier; STENCIL_SYNC=neighbor selects the neighbour-only token
     // exchange.
     //
-    // The barrier is the default DELIBERATELY, and must stay that way until the
-    // token path has been benchmarked and validated on this machine:
-    //   - Every stencil number in the paper (job 59853) is a barrier run.
-    //   - The FIRST token attempt was reverted in 445c39a as RACY: at 8 ranks it
-    //     produced L2 3.7550293292 (1024^2) and 5.0563202266 (4096^2) against
-    //     the correct 5.1449605829, while every barrier run matched. A token
-    //     proves the neighbour finished writing, not unpacking.
-    //   - It was also NOT faster: 4 ranks, barrier vs token, 16384^2 36.89 vs
-    //     37.04 ms and 32768^2 135.29 vs 135.45 ms. OpenMPI's intra-node barrier
-    //     beats four Isend/Irecv plus a Waitall.
-    // The double-buffered slots below (slot = iter & 1) are what this second
-    // attempt adds to close that race -- iteration i+1 writes the other slot, so
-    // it cannot clobber iteration i while a neighbour is still reading it. That
-    // is a plausible fix, not a verified one: as of this commit the token path
-    // has never been run. Flip the default only alongside a job log showing
-    // matching L2 at 8 ranks.
+    // The barrier is the default because every stencil number in the paper
+    // (job 59853) is a barrier run; keep it until the paper's numbers are
+    // re-measured, not because the token path is unsafe.
+    //
+    // HISTORY. The FIRST token attempt was reverted in 445c39a as RACY: at 8
+    // ranks it produced L2 3.7550293292 (1024^2) and 5.0563202266 (4096^2)
+    // against the correct 5.1449605829, while every barrier run matched. A
+    // token proves the neighbour finished writing, not unpacking. The
+    // double-buffered slots below (slot = iter & 1) are what this second
+    // attempt adds to close that race -- iteration i+1 writes the other slot,
+    // so it cannot clobber iteration i while a neighbour is still reading it.
+    //
+    // VALIDATED 2026-08-13, job 63329 (h200x8-03), which is the "matching L2 at
+    // 8 ranks" log this comment used to demand before trusting the token path:
+    //   - All 144 RESULT rows -- np 2/4/8 x 6 sizes x both handshakes -- report
+    //     l2=5.1449605829. Zero mismatches between the barrier and neighbour
+    //     arms at any np/size. The race is closed.
+    //   - The "NOT faster" note was measured at 4 ranks, where it still holds
+    //     (16384^2: 36.86 barrier vs 36.90 token). It does NOT generalise: at 8
+    //     ranks the token wins by 5.2% at 2048^2 and 4.6% at 4096^2, where
+    //     barrier latency is a real fraction of the step. Elsewhere it is a
+    //     wash. Two slots suffice: a neighbour cannot reach iteration i+2's
+    //     write without first receiving this rank's iteration-i+1 token, which
+    //     is only sent after the cudaDeviceSynchronize that retires iteration
+    //     i's unpack.
     bool neighbor_sync = false;
     {
         const char* s = getenv("STENCIL_SYNC");
@@ -172,8 +181,15 @@ int main(int argc, char** argv)
             if (strcmp(s, "barrier") == 0)       neighbor_sync = false;
             else if (strcmp(s, "neighbor") == 0 ||
                      strcmp(s, "neighbour") == 0) neighbor_sync = true;
-            else if (rank == 0)
-                printf("WARNING: unknown STENCIL_SYNC=\"%s\", using neighbor\n", s);
+            // Do not guess: a typo'd STENCIL_SYNC used to print "using neighbor"
+            // while leaving the barrier default in place, so an A/B arm could
+            // silently measure the handshake it was not asking for.
+            else {
+                if (rank == 0)
+                    fprintf(stderr, "FATAL: unknown STENCIL_SYNC=\"%s\" "
+                            "(expected \"barrier\" or \"neighbor\")\n", s);
+                MPI_Abort(MPI_COMM_WORLD, 2);
+            }
         }
     }
 
