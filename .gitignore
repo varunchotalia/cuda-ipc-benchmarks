@@ -73,3 +73,14 @@ build_*.log
 # disk with its own .git and its own history -- it is simply not part of this
 # repo. Local-only: nothing here backs it up.
 /CloverLeaf/
+
+# Paper drafts land at the repo root. They were untracked but not ignored, so a
+# `git add -A` would have swept a double-blind submission into a repo whose link
+# the paper itself promises to publish after review.
+#
+# Root-scoped on purpose, like /*.sbatch above. A bare `*.pdf` would also cover
+# plots/*.pdf -- those are the paper's figures, they ARE tracked, and while an
+# ignore rule cannot untrack them it would silently hide any NEWLY generated
+# figure from `git status`. Regenerating a figure under a new filename would
+# then look like a no-op.
+/*.pdf
