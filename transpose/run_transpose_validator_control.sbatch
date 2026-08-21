@@ -80,11 +80,23 @@ echo "build done"
 # NB: the binary takes <iterations> <matrix_order> in that order, not the
 # reverse. Warmup is left at its default of 1; the ACCUMULATE expected-value
 # formula derives from warmup+iterations, so every rank agrees without -x.
+# Baseline arms must run with TRANSPOSE_SKIP_PEER genuinely ABSENT, not set to
+# a sentinel. Job 66045 died on exactly that: it set TRANSPOSE_SKIP_PEER=NA and
+# relied on withholding `-x` to keep it from the ranks. That reasoning is wrong
+# on a single node -- mpirun forks the ranks locally, so they inherit its whole
+# environment and `-x` is irrelevant. Every rank saw "NA", the binary's
+# validation guard correctly rejected it, and all 16 cells aborted. `env -u`
+# removes the variable outright and does not depend on launcher semantics.
 run_one() {   # $1=accum $2=order $3=skip-or-NA
-    local ACC=$1 ORD=$2 SKIP=$3 ENVS="" OUT
-    [ "$SKIP" != "NA" ] && ENVS="-x TRANSPOSE_SKIP_PEER"
-    OUT=$(TRANSPOSE_SKIP_PEER=$SKIP mpirun -np 4 -x UCX_LOG_LEVEL $ENVS \
-          env LD_PRELOAD=$MPIWRAP /tmp/tvc_single_$ACC 50 $ORD 2>&1)
+    local ACC=$1 ORD=$2 SKIP=$3 OUT
+    if [ "$SKIP" = "NA" ]; then
+        OUT=$(env -u TRANSPOSE_SKIP_PEER mpirun -np 4 -x UCX_LOG_LEVEL \
+              env LD_PRELOAD=$MPIWRAP /tmp/tvc_single_$ACC 50 $ORD 2>&1)
+    else
+        OUT=$(TRANSPOSE_SKIP_PEER=$SKIP mpirun -np 4 -x UCX_LOG_LEVEL \
+              -x TRANSPOSE_SKIP_PEER \
+              env LD_PRELOAD=$MPIWRAP /tmp/tvc_single_$ACC 50 $ORD 2>&1)
+    fi
     local VERDICT
     VERDICT=$(echo "$OUT" | grep -oE 'Solution validates|NEGATIVE CONTROL (PASSED|FAILED)|ERROR: Per-element error [0-9.e+-]+' | head -1)
     echo "CONTROL accum=$ACC order=$ORD skip=$SKIP -> ${VERDICT:-NO-VERDICT-LINE}"
