@@ -97,9 +97,14 @@ run_one() {   # $1=accum $2=order $3=skip-or-NA
               -x TRANSPOSE_SKIP_PEER \
               env LD_PRELOAD=$MPIWRAP /tmp/tvc_single_$ACC 50 $ORD 2>&1)
     fi
-    local VERDICT
+    local VERDICT VERIFY
     VERDICT=$(echo "$OUT" | grep -oE 'Solution validates|NEGATIVE CONTROL (PASSED|FAILED)|ERROR: Per-element error [0-9.e+-]+' | head -1)
+    # Margin, printed pass or fail. mismatched=0 on a control arm means the
+    # write suppression never took effect -- a harness/kernel problem -- as
+    # opposed to a blind verifier, which would show mismatched>0 yet validate.
+    VERIFY=$(echo "$OUT" | grep -oE 'VERIFY: .*' | head -1)
     echo "CONTROL accum=$ACC order=$ORD skip=$SKIP -> ${VERDICT:-NO-VERDICT-LINE}"
+    echo "        ${VERIFY:-VERIFY-LINE-ABSENT}"
     if [ -z "$VERDICT" ]; then
         echo "---- no verdict, full output ----"; echo "$OUT"; echo "---- end ----"
     fi

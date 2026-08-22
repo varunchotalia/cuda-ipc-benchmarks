@@ -778,7 +778,14 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaMemcpy(B_h, B_d, col_elems * sizeof(double),
                           cudaMemcpyDeviceToHost));
 
-    double abserr = 0.0;
+    /* Alongside the summed error, count how many elements actually differ and
+       how far the worst one is. A pass/fail verdict alone cannot distinguish
+       "the perturbation landed and the check caught it" from "the perturbation
+       never happened", and each round trip through this queue costs ~a day.
+       n_mismatch == 0 means B is fully correct, so any control that reports it
+       failed to suppress anything rather than exposing a blind verifier. */
+    double abserr = 0.0, max_abs = 0.0;
+    long   n_mismatch = 0;
 #if ACCUMULATE
     /* Total executed iterations is warmup + iterations; with the default
      * warmup=1 this reduces to the original (iterations + 1) accounting. */
@@ -788,21 +795,34 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < (size_t)order; i++) {
             double expected = (double)((double)order * i + j + colstart)
                               * total_it + addit;
-            abserr += fabs(B_h[i + (size_t)order * j] - expected);
+            double d = fabs(B_h[i + (size_t)order * j] - expected);
+            abserr += d;
+            if (d > 1.0e-8) { n_mismatch++; if (d > max_abs) max_abs = d; }
         }
 #else
     for (size_t j = 0; j < (size_t)Bo; j++)
         for (size_t i = 0; i < (size_t)order; i++) {
             double expected = (double)order * i + (double)(j + colstart);
-            abserr += fabs(B_h[i + (size_t)order * j] - expected);
+            double d = fabs(B_h[i + (size_t)order * j] - expected);
+            abserr += d;
+            if (d > 1.0e-8) { n_mismatch++; if (d > max_abs) max_abs = d; }
         }
 #endif
 
-    double abserr_tot;
+    double abserr_tot, max_abs_tot;
+    long   n_mismatch_tot;
     MPI_Reduce(&abserr, &abserr_tot, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&max_abs, &max_abs_tot, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&n_mismatch, &n_mismatch_tot, 1, MPI_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (my_ID == 0) {
         double abserr_per_elem = abserr_tot / ((double)order * order);
+        /* Printed unconditionally, pass or fail, so one job yields both the
+           verdict and its margin. ratio<1 passes the 1.0e-8 threshold. */
+        printf("VERIFY: elems=%lld mismatched=%ld max_abs_diff=%.6e "
+               "abserr_total=%.6e abserr_per_elem=%.6e ratio_to_threshold=%.3e\n",
+               (long long)order * order, n_mismatch_tot, max_abs_tot,
+               abserr_tot, abserr_per_elem, abserr_per_elem / 1.0e-8);
 #if COMM_MODE == 0 && SINGLE_KERNEL
         if (g_skip_send_to >= 0) {
             /* Control run: the only acceptable outcome is a FAILED check. */
