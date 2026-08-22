@@ -510,10 +510,19 @@ int main(int argc, char **argv)
         if (s && *s) {
             char *end = NULL;
             long v = strtol(s, &end, 10);
-            if (end == s || *end != '\0' || v < 0 || v >= P || (int)v == my_ID) {
+            /* Rank-invariant check only. TRANSPOSE_SKIP_PEER names one rank
+               GLOBALLY -- every rank suppresses its write to that rank, so the
+               named rank's B block goes unfilled by peers. Rejecting v==my_ID
+               here was wrong: it made a global parameter fail on exactly one
+               rank, and job 68175 died that way (MPI_Abort on rank 1 for
+               TRANSPOSE_SKIP_PEER=1) with all 12 control cells lost. The grid
+               is dim3(.,.,P-1) and send_to = (my_ID-(peer_idx+1)+P)%P, which
+               covers every rank except my_ID, so on the named rank the compare
+               simply never matches. It is a no-op there, not an error. */
+            if (end == s || *end != '\0' || v < 0 || v >= P) {
                 if (my_ID == 0)
                     fprintf(stderr, "FATAL: TRANSPOSE_SKIP_PEER=\"%s\" must be a "
-                            "peer rank in [0,%d) other than this rank\n", s, P);
+                            "rank in [0,%d)\n", s, P);
                 MPI_Abort(MPI_COMM_WORLD, 3);
             }
             g_skip_send_to = (int)v;
