@@ -13,8 +13,10 @@
 //
 // The receive buffers a peer writes into are double-buffered (slot iter%2).
 // STENCIL_SYNC selects the completion handshake: "barrier" (default) uses
-// MPI_Barrier, "neighbor" trades a zero-byte token with each neighbour. See the
-// long comment at the handshake in the main loop.
+// MPI_Barrier, "neighbor" trades a zero-byte MPI_Isend token with each
+// neighbour, "ssend" trades the same token with MPI_Ssend so the send does not
+// return until the neighbour posts its receive. See the long comment at the
+// handshake in the main loop.
 //
 // Compile: nvcc -o stencil_large_ipc stencil_large_contiguous.cu -lmpi
 // Run:     mpirun -np 4 ./stencil_large_ipc
@@ -174,20 +176,30 @@ int main(int argc, char** argv)
     //     write without first receiving this rank's iteration-i+1 token, which
     //     is only sent after the cudaDeviceSynchronize that retires iteration
     //     i's unpack.
-    bool neighbor_sync = false;
+    // ssend_sync is the advisor's original proposal, added 2026-08-23 so it can
+    // be measured rather than argued about: swap the zero-byte MPI_Isend token
+    // for a synchronous MPI_Ssend. Ssend does not return until the receiver has
+    // posted the matching receive, so it proves the neighbour has REACHED this
+    // iteration, which the Isend token does not. Everything else -- the double
+    // buffering, the IPC writes, the tags -- is unchanged, so a neighbor-vs-
+    // ssend A/B isolates the handshake alone.
+    bool neighbor_sync = false, ssend_sync = false;
     {
         const char* s = getenv("STENCIL_SYNC");
         if (s && *s) {
             if (strcmp(s, "barrier") == 0)       neighbor_sync = false;
             else if (strcmp(s, "neighbor") == 0 ||
                      strcmp(s, "neighbour") == 0) neighbor_sync = true;
+            else if (strcmp(s, "ssend") == 0)  { neighbor_sync = true;
+                                                 ssend_sync    = true; }
             // Do not guess: a typo'd STENCIL_SYNC used to print "using neighbor"
             // while leaving the barrier default in place, so an A/B arm could
             // silently measure the handshake it was not asking for.
             else {
                 if (rank == 0)
                     fprintf(stderr, "FATAL: unknown STENCIL_SYNC=\"%s\" "
-                            "(expected \"barrier\" or \"neighbor\")\n", s);
+                            "(expected \"barrier\", \"neighbor\" or "
+                            "\"ssend\")\n", s);
                 MPI_Abort(MPI_COMM_WORLD, 2);
             }
         }
@@ -211,7 +223,8 @@ int main(int argc, char** argv)
         printf("Ghost window: %.2f KB (contiguous, %d slots of %.2f KB)\n",
                recv_win_size / 1e3, RECV_SLOTS, ghost_size / 1e3);
         printf("Completion handshake: %s\n",
-               neighbor_sync ? "neighbour-only token exchange"
+               ssend_sync    ? "neighbour-only Ssend handshake"
+             : neighbor_sync ? "neighbour-only token exchange"
                              : "global MPI_Barrier");
     }
 
@@ -403,11 +416,11 @@ int main(int argc, char** argv)
         // we are still packing, instead of only once we go looking for it. Only
         // IPC sides need one: a fallback side's data Isend/Irecv already carries
         // its own completion signal.
-        if (neighbor_sync && ipc_ok_L) {
+        if (neighbor_sync && !ssend_sync && ipc_ok_L) {
             MPI_Irecv(NULL, 0, MPI_BYTE, left_rank, 20,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
-        if (neighbor_sync && ipc_ok_R) {
+        if (neighbor_sync && !ssend_sync && ipc_ok_R) {
             MPI_Irecv(NULL, 0, MPI_BYTE, right_rank, 21,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
@@ -449,16 +462,39 @@ int main(int argc, char** argv)
         // each neighbour may now be told its slot is filled. My left edge went
         // into the left neighbour's R slot (tag 21); my right edge went into the
         // right neighbour's L slot (tag 20).
-        if (neighbor_sync && ipc_ok_L) {
+        if (neighbor_sync && !ssend_sync && ipc_ok_L) {
             MPI_Isend(NULL, 0, MPI_BYTE, left_rank, 21,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
-        if (neighbor_sync && ipc_ok_R) {
+        if (neighbor_sync && !ssend_sync && ipc_ok_R) {
             MPI_Isend(NULL, 0, MPI_BYTE, right_rank, 20,
                       MPI_COMM_WORLD, &greqs[ngreq++]);
         }
 
         if (ngreq > 0) MPI_Waitall(ngreq, greqs, MPI_STATUSES_IGNORE);
+
+        // Ssend handshake. MPI_Ssend blocks until the peer posts its matching
+        // receive, so a naive "send both sides, then receive both sides" would
+        // deadlock with every rank waiting on a neighbour that is also sending.
+        // Rank parity breaks the cycle: even ranks send first, odd ranks
+        // receive first, which is the standard odd/even ordering.
+        if (ssend_sync) {
+            const int even = (rank % 2 == 0);
+            for (int pass = 0; pass < 2; pass++) {
+                const int sending = (pass == 0) ? even : !even;
+                if (sending) {
+                    if (ipc_ok_L) MPI_Ssend(NULL, 0, MPI_BYTE, left_rank,  21,
+                                            MPI_COMM_WORLD);
+                    if (ipc_ok_R) MPI_Ssend(NULL, 0, MPI_BYTE, right_rank, 20,
+                                            MPI_COMM_WORLD);
+                } else {
+                    if (ipc_ok_L) MPI_Recv(NULL, 0, MPI_BYTE, left_rank,  20,
+                                           MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                    if (ipc_ok_R) MPI_Recv(NULL, 0, MPI_BYTE, right_rank, 21,
+                                           MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                }
+            }
+        }
 
         // Completion handshake. A rank writes straight into its neighbour's
         // receive buffer, so the neighbour must not unpack until that write has
