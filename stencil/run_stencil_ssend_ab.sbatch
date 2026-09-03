@@ -1,11 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=stencil_ssend_ab
+#SBATCH --job-name=stencil_ssend_np8
 #SBATCH --partition=h200x8
+#SBATCH --nodelist=h200x8-03
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --gpus=8
 #SBATCH --time=01:00:00
-#SBATCH --output=stencil_ssend_ab_%j.out
+#SBATCH --output=stencil_ssend_np8_%j.out
 
 # Three-way handshake comparison: barrier vs Isend token vs Ssend token.
 #
@@ -36,7 +37,7 @@ source $REPO/scripts/build_mpiwrap.sh
 MPIWRAP=$MPIWRAP_LIB
 ARCH="-gencode arch=compute_90,code=sm_90"
 WU=20
-REPS=3
+REPS=5
 SIZES="1024 2048 4096 8192 16384"
 
 export UCX_LOG_LEVEL=error
@@ -73,7 +74,21 @@ run_one() {   # $1=np $2=sync $3=size $4=rep
     fi
 }
 
-for NP in 8 4 2; do
+# Job 83186 wasted its np=8 rows: the first ~8 minutes ran ~150x slow (every
+# size pinned near 450 ms regardless of work) and only recovered by the last
+# size. We had all 8 GPUs to ourselves -- the previous job released the node
+# 60 s before we started -- so this was the node settling, not contention.
+# Discard a full sweep before timing anything, and run np=8 alone since that
+# is the only rank count whose timings 83186 lost.
+echo "### settling run (untimed, discarded) ###"
+for S in 1024 4096 16384; do
+    STENCIL_WARMUP=20 STENCIL_SYNC=neighbor \
+      mpirun -np 8 -x STENCIL_WARMUP -x STENCIL_SYNC -x UCX_LOG_LEVEL \
+      env LD_PRELOAD=$MPIWRAP /tmp/ssab_ipc_$S >/dev/null 2>&1
+done
+echo "settled"
+
+for NP in 8; do
     for SIZE in $SIZES; do
         for SYNC in barrier neighbor ssend; do
             for R in $(seq 1 $REPS); do
