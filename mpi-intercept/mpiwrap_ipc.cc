@@ -34,6 +34,7 @@ struct WinMeta {
     int disp_unit = 1;                      // as passed at window construction
     cudaIpcMemHandle_t* handles = nullptr;  // IPC handle from each rank
     size_t* peer_sizes = nullptr;           // size of EACH rank, gathered at create
+    int* peer_devs = nullptr;               // CUDA device ordinal of EACH rank
     void** opened = nullptr;                // cached opened pointers
     void* self_base = nullptr;              // my own base pointer
     bool self_base_owned = false;           // true if we cudaMalloc'd it
@@ -235,6 +236,14 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     PMPI_Allgather(&my_size, sizeof(size_t), MPI_BYTE,
                   peer_sizes, sizeof(size_t), MPI_BYTE, comm);
 
+    // Gather each rank's CUDA device ordinal. shared_query needs it to ask
+    // cudaDeviceCanAccessPeer before trusting an opened handle -- see the long
+    // comment there. One more Allgather at construction, nothing later.
+    auto* peer_devs = (int*)malloc(nprocs * sizeof(int));
+    int my_dev = -1;
+    cudaGetDevice(&my_dev);
+    PMPI_Allgather(&my_dev, 1, MPI_INT, peer_devs, 1, MPI_INT, comm);
+
     // spanning communicators get a zero-size key window: the app only uses
     // the handle for shared_query/free, and registering device memory with
     // the MPI library across nodes is exactly what we are bypassing
@@ -251,6 +260,7 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     m->disp_unit = disp;
     m->handles = handles;
     m->peer_sizes = peer_sizes;
+    m->peer_devs = peer_devs;
     m->opened = (void**)calloc(nprocs, sizeof(void*));
     m->self_base = base;
     m->self_base_owned = false;
@@ -317,6 +327,41 @@ int MPI_Win_shared_query(MPI_Win win, int target,
     }
 
     if (!m->opened[target]) {
+        // Peer-access gate. cudaIpcOpenMemHandle is asked for LAZY peer
+        // enablement, so on a node whose GPUs form separate peer-accessible
+        // islands it can RETURN SUCCESS for a target in the other island. The
+        // caller then writes through a pointer that never lands, gets no error,
+        // and silently computes on stale ghost data.
+        //
+        // Observed on h200x8-04 (GPUs 0-3 and 4-7 are NVLink islands, PCIe
+        // between them). Job 83189: at 8 ranks the stencil returned L2
+        // 0.6600931148 instead of 5.1449605829, deterministically and at full
+        // speed, while ranks 3 and 4 -- the pair straddling the boundary --
+        // both reported "IPC setup complete" and never took the MPI fallback.
+        // np=4 fits inside one island and was correct.
+        //
+        // Section III-C of the paper states that a failed peer query is
+        // reported so the application can fall back to MPI. That was true only
+        // for peers on other nodes, where the open itself fails. Ask the
+        // hardware directly instead of inferring reachability from the open.
+        //
+        // Only meaningful when both ranks are on this node; if they are not,
+        // the open fails on its own and the check below never runs.
+        if (m->peer_devs) {
+            int mydev = -1, can = 0;
+            cudaGetDevice(&mydev);
+            int peerdev = m->peer_devs[target];
+            if (mydev >= 0 && peerdev >= 0 && mydev != peerdev &&
+                cudaDeviceCanAccessPeer(&can, mydev, peerdev) == cudaSuccess &&
+                !can) {
+                cudaGetLastError();
+                LOG("Rank %d (dev %d) cannot peer-access rank %d (dev %d); "
+                    "reporting unreachable so the caller falls back to MPI",
+                    m->rank, mydev, target, peerdev);
+                return MPI_ERR_OTHER;
+            }
+        }
+
         void* ptr;
         cudaError_t cerr = cudaIpcOpenMemHandle(&ptr, m->handles[target],
                                                 cudaIpcMemLazyEnablePeerAccess);
@@ -366,6 +411,7 @@ int MPI_Win_free(MPI_Win* win)
             if (i != m->rank && m->opened[i])
                 cudaIpcCloseMemHandle(m->opened[i]);
         }
+        free(m->peer_devs);
         if (m->self_base_owned)
             cudaFree(m->self_base);
         free(m->opened);
