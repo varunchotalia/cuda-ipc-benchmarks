@@ -35,11 +35,27 @@
 #    apples-to-apples comparison at the same rank counts
 #
 # Rank counts need one MPI rank per GPU, and the job allocation must
-# actually cover them: LULESH and transpose default to 8/27/64 ranks
-# (LULESH needs cubic counts), stencil to 8/64 -- i.e. request at least
+# actually cover them: LULESH defaults to 8/27/64 ranks, transpose and stencil
+# to 8/16/32/64. LULESH needs cubic counts. Request at least
 # 64 GPUs (however many NVL72 trays that spans) for the defaults to run
 # to completion; override via RANKS_LIST / TRANSPOSE_RANKS_LIST /
-# STENCIL_RANKS_LIST if your allocation is smaller.
+# STENCIL_RANKS_LIST if your allocation is smaller. One rank per GPU is set by
+# --ntasks-per-node in the launcher, not by these lists -- see GPUS_PER_NODE.
+#
+# SIZING THE ALLOCATION. The defaults are much bigger than the 2026-08-06 run,
+# which fitted in `-t 0:25:00`. Rough estimate for the current defaults:
+#   transpose  ~60-90 min  (7 orders x 4 rank counts x 7 variants; cost scales
+#                           as order^2, so 131072 alone is ~50% of the section)
+#   stencil    ~20-30 min  (4 rank counts x 3 reps x 6 runs)
+#   LULESH     ~45-60 min  (3 rank counts x 5 reps x 7 variants, plus 4/4)
+# Call it 3 hours wall clock on 16 nodes, and pass -t accordingly. To trim,
+# the cheapest cuts in order are: TRANSPOSE_ITERS=50 (halves the transpose),
+# then dropping 98304/131072 from TRANSPOSE_ORDERS_LIST.
+#
+# HOST memory is the likeliest thing to blow up, not device memory. Every
+# transpose rank mallocs order^2/P doubles on the host for verification: at
+# order 131072 and 8 ranks that is 17.2 GB per rank, i.e. ~69 GB per node at
+# 4 ranks per node, on top of ~4 GB of pinned staging buffers per rank.
 #
 # Requirements on the target system: CUDA >= 12.4 driver stack with the
 # IMEX daemon running (for fabric handles), CUDA-aware MPI (for the ipc/
@@ -75,9 +91,16 @@ if [ -n "$BUILD_MPI" ] && command -v ompi_info >/dev/null 2>&1; then
 fi
 
 # --- Launcher auto-detection (skipped if LAUNCH is already set) -----------
+# GPUS_PER_NODE feeds srun's --ntasks-per-node. A bare `srun --mpi=pmix -n N`
+# does NOT place one rank per GPU: in job 2528116 it spread 8 ranks over 8
+# nodes, so lulesh_ipc and lulesh_ipc_rp reported "7 of 7 peers not IPC
+# reachable" and ran entirely on the two-sided MPI fallback. Those rows were
+# labelled IPC and measured MPI. srun derives the node count from -n once
+# --ntasks-per-node is set, so this is the only geometry knob needed.
+GPUS_PER_NODE=${GPUS_PER_NODE:-4}
 if [ -z "${LAUNCH:-}" ]; then
     if [ -n "${SLURM_JOB_ID:-}" ] && command -v srun >/dev/null 2>&1; then
-        LAUNCH="srun --mpi=pmix -n"
+        LAUNCH="srun --mpi=pmix --ntasks-per-node=$GPUS_PER_NODE -n"
         echo "LAUNCH not set: detected a Slurm allocation, using '$LAUNCH'"
     elif command -v mpirun >/dev/null 2>&1; then
         LAUNCH="mpirun -np"
@@ -94,27 +117,37 @@ if [ -z "${LAUNCH:-}" ]; then
 fi
 
 RANKS_LIST=${RANKS_LIST:-8 27 64}        # LULESH needs cubic rank counts
-TRANSPOSE_RANKS_LIST=${TRANSPOSE_RANKS_LIST:-$RANKS_LIST}
-STENCIL_RANKS_LIST=${STENCIL_RANKS_LIST:-8 64}
+TRANSPOSE_RANKS_LIST=${TRANSPOSE_RANKS_LIST:-8 16 32 64}
+# 16 and 32 are NOT optional here. The stencil result this rerun exists to fix
+# -- GPU-aware MPI at 121.85 ms (16 GPUs) and 169.51 ms (32), both measured at
+# warmup 0 -- was taken at those two rank counts and nowhere else. A sweep of
+# 8 and 64 alone produces new numbers that cannot replace them, so the open
+# question (fixed cross-node wireup, or a genuinely slow inter-node device
+# path?) would stay open. 8 and 64 are kept as the low and high anchors.
+STENCIL_RANKS_LIST=${STENCIL_RANKS_LIST:-8 16 32 64}
 TRANSPOSE_ITERS=${TRANSPOSE_ITERS:-100}
-# 27648 = 2^10 * 27, so it is divisible by 8, 16, 27, 32 and 64 -- every rank
-# count these lists use. It is 4x the previous 6912, i.e. 16x the bytes:
-# 2*8*order^2 = 12.2 GB of matrix, and order^2/P doubles per rank per window.
-# Per-rank device footprint (two windows + block buffers): ~1.6 GB at 8 ranks,
-# ~0.8 GB at 16, ~0.2 GB at 64 -- comfortable on 186 GB GB200s. The host-side
-# verification buffer is order^2/P doubles too: 764 MB/rank at 8 ranks, so
-# ~3 GB/node at 4 ranks per node.
-TRANSPOSE_ORDER=${TRANSPOSE_ORDER:-27648}
+STENCIL_REPS=${STENCIL_REPS:-3}
+LULESH_REPS=${LULESH_REPS:-5}
+# The largest default order is intended to remain within GB200 device memory at
+# the low rank counts. Each order must be divisible by its rank count because
+# the transpose partitions the matrix into equal columns. The host-side
+# verification buffer is order^2/P doubles per rank.
+# The previous NVL72 run used one order, 6912. The default sweep extends the
+# range so the scaling trend is not determined by one small matrix. Set
+# TRANSPOSE_ORDER to run one order, or TRANSPOSE_ORDERS_LIST to replace this
+# sweep without changing the script.
+TRANSPOSE_ORDERS_LIST=${TRANSPOSE_ORDERS_LIST:-"8192 16384 32768 49152 65536 98304 131072"}
+if [ -n "${TRANSPOSE_ORDER:-}" ]; then
+    TRANSPOSE_ORDERS_LIST="$TRANSPOSE_ORDER"
+fi
 LULESH_SIZE=${LULESH_SIZE:-45}           # per-rank problem size
 MPIWRAP_LIB=$PWD/$BUILD/libmpiwrap.so
 export NVSHMEM_BOOTSTRAP=${NVSHMEM_BOOTSTRAP:-MPI}
 
-# NVSHMEM's symmetric heap defaults to 1 GiB, which order=27648 overruns:
-# transpose_nvshmem takes 2 x order^2/P doubles plus 2 x (order/P)^2 from the
-# heap, i.e. ~1.7 GB per PE at 8 ranks and ~0.8 GB at 16. Without this the
-# nvshmem variants abort in nvshmem_malloc at the low rank counts while every
-# other variant runs, which reads as an NVSHMEM failure and is not one.
-export NVSHMEM_SYMMETRIC_SIZE=${NVSHMEM_SYMMETRIC_SIZE:-8589934592}   # 8 GiB
+# NVSHMEM's symmetric heap defaults to 1 GiB. The largest default transpose
+# order needs about 32 GiB per PE at 8 ranks for its two distributed matrices,
+# so reserve 40 GiB by default. Override this when running a smaller sweep.
+export NVSHMEM_SYMMETRIC_SIZE=${NVSHMEM_SYMMETRIC_SIZE:-42949672960}   # 40 GiB
 # ...and passed per launch as well, for the same reason as the warmup vars
 # below: exporting is enough for srun, not for Open MPI's mpirun.
 NVSHMEM_ENV="env NVSHMEM_BOOTSTRAP=$NVSHMEM_BOOTSTRAP NVSHMEM_SYMMETRIC_SIZE=$NVSHMEM_SYMMETRIC_SIZE"
@@ -141,6 +174,8 @@ STENCIL_WARMUP=${STENCIL_WARMUP:-20}
 TRANSPOSE_WARMUP=${TRANSPOSE_WARMUP:-20}
 WARMUP_S="env STENCIL_WARMUP=$STENCIL_WARMUP"
 WARMUP_T="env TRANSPOSE_WARMUP=$TRANSPOSE_WARMUP"
+STENCIL_BARRIER="env STENCIL_WARMUP=$STENCIL_WARMUP STENCIL_SYNC=barrier"
+STENCIL_NEIGHBOR="env STENCIL_WARMUP=$STENCIL_WARMUP STENCIL_SYNC=neighbor"
 
 # --- Interposer preflight -------------------------------------------------
 # LD_PRELOAD failures are non-fatal by design: ld.so prints "cannot be
@@ -161,50 +196,68 @@ done
 unset _v
 
 echo "launcher: '$LAUNCH', build dir: $BUILD"
-echo "transpose ranks: ${TRANSPOSE_RANKS_LIST}; stencil ranks: ${STENCIL_RANKS_LIST}; LULESH ranks: ${RANKS_LIST}"
+echo "transpose ranks: ${TRANSPOSE_RANKS_LIST}"
+echo "stencil ranks: ${STENCIL_RANKS_LIST}, repetitions: ${STENCIL_REPS}"
+echo "LULESH ranks: ${RANKS_LIST}, repetitions: ${LULESH_REPS}"
 echo "======================================================================"
 echo "1/4 transpose; direct/buffered ride the interposer windows"
 echo "======================================================================"
 for N in $TRANSPOSE_RANKS_LIST; do
-    if [ $((TRANSPOSE_ORDER % N)) -ne 0 ]; then
-        echo "SKIP: transpose at $N ranks needs TRANSPOSE_ORDER divisible by $N"
-        continue
-    fi
-    echo "########## transpose, $N ranks, order $TRANSPOSE_ORDER ##########"
-    for V in staged gpumpi buffered direct direct_single; do
-        case $V in
-            buffered|direct*) PRE="env LD_PRELOAD=$MPIWRAP_LIB TRANSPOSE_WARMUP=$TRANSPOSE_WARMUP" ;;
-            *)                PRE="$WARMUP_T" ;;
-        esac
-        echo "--- transpose_$V ---"
-        $LAUNCH $N $PRE ./$BUILD/transpose_$V $TRANSPOSE_ITERS $TRANSPOSE_ORDER \
-            || echo "FAILED: transpose_$V at $N ranks"
-    done
-    if [ -x ./$BUILD/transpose_nvshmem_direct ]; then
-        for V in nvshmem_direct nvshmem_buffered; do
+    for ORDER in $TRANSPOSE_ORDERS_LIST; do
+        if [ $((ORDER % N)) -ne 0 ]; then
+            echo "SKIP: transpose at $N ranks, order $ORDER is not divisible by $N"
+            continue
+        fi
+        echo "########## transpose, $N ranks, order $ORDER ##########"
+        for V in staged gpumpi buffered direct direct_single; do
+            case $V in
+                buffered|direct*) PRE="env LD_PRELOAD=$MPIWRAP_LIB TRANSPOSE_WARMUP=$TRANSPOSE_WARMUP" ;;
+                *)                PRE="$WARMUP_T" ;;
+            esac
             echo "--- transpose_$V ---"
-            $LAUNCH $N $WARMUP_T $NVSHMEM_ENV ./$BUILD/transpose_$V $TRANSPOSE_ITERS $TRANSPOSE_ORDER \
-                || echo "FAILED: transpose_$V at $N ranks"
+            $LAUNCH $N $PRE ./$BUILD/transpose_$V $TRANSPOSE_ITERS $ORDER \
+                || echo "FAILED: transpose_$V at $N ranks, order $ORDER"
         done
-    fi
+        if [ -x ./$BUILD/transpose_nvshmem_direct ]; then
+            for V in transpose_nvshmem_direct transpose_nvshmem_buffered; do
+                echo "--- $V ---"
+                $LAUNCH $N $WARMUP_T $NVSHMEM_ENV ./$BUILD/$V $TRANSPOSE_ITERS $ORDER \
+                    || echo "FAILED: $V at $N ranks, order $ORDER"
+            done
+        fi
+    done
 done
 
 echo "======================================================================"
 echo "2/4 stencil; ipc rides the interposer windows"
-echo "  all four variants run at STENCIL_WARMUP=$STENCIL_WARMUP -- each prints"
+echo "  barrier and barrierless configurations run at STENCIL_WARMUP=$STENCIL_WARMUP"
+echo "  with $STENCIL_REPS repetitions per timed point -- each prints"
 echo "  'Warmup iterations (untimed): N'; if that line says 0, or is absent"
 echo "  from the nvshmem variant, the binary predates the warmup support and"
 echo "  its GPU-aware column is setup-dominated, not a throughput measurement"
 echo "======================================================================"
 for N in $STENCIL_RANKS_LIST; do
-    echo "########## stencil, $N ranks ##########"
-    $LAUNCH $N env LD_PRELOAD=$MPIWRAP_LIB STENCIL_WARMUP=$STENCIL_WARMUP ./$BUILD/stencil_ipc \
-        || echo "FAILED: stencil_ipc at $N ranks"
-    $LAUNCH $N $WARMUP_S ./$BUILD/stencil_mpi || echo "FAILED: stencil_mpi at $N ranks"
-    $LAUNCH $N $WARMUP_S ./$BUILD/stencil_gpumpi || echo "FAILED: stencil_gpumpi at $N ranks"
-    if [ -x ./$BUILD/stencil_nvshmem ]; then
-        $LAUNCH $N $WARMUP_S $NVSHMEM_ENV ./$BUILD/stencil_nvshmem || echo "FAILED: stencil_nvshmem at $N ranks"
-    fi
+    for REP in $(seq 1 $STENCIL_REPS); do
+        echo "########## stencil, $N ranks, repetition $REP ##########"
+        $LAUNCH $N $STENCIL_BARRIER env LD_PRELOAD=$MPIWRAP_LIB ./$BUILD/stencil_ipc \
+            || echo "FAILED: stencil_ipc barrier at $N ranks, repetition $REP"
+        $LAUNCH $N $WARMUP_S ./$BUILD/stencil_mpi \
+            || echo "FAILED: stencil_mpi at $N ranks, repetition $REP"
+        $LAUNCH $N $WARMUP_S ./$BUILD/stencil_gpumpi \
+            || echo "FAILED: stencil_gpumpi at $N ranks, repetition $REP"
+        if [ -x ./$BUILD/stencil_nvshmem ]; then
+            $LAUNCH $N $STENCIL_BARRIER $NVSHMEM_ENV ./$BUILD/stencil_nvshmem \
+                || echo "FAILED: stencil_nvshmem barrier at $N ranks, repetition $REP"
+        fi
+
+        echo "########## stencil barrierless, $N ranks, repetition $REP ##########"
+        $LAUNCH $N $STENCIL_NEIGHBOR env LD_PRELOAD=$MPIWRAP_LIB ./$BUILD/stencil_ipc \
+            || echo "FAILED: stencil_ipc neighbor at $N ranks, repetition $REP"
+        if [ -x ./$BUILD/stencil_nvshmem ]; then
+            $LAUNCH $N $STENCIL_NEIGHBOR $NVSHMEM_ENV ./$BUILD/stencil_nvshmem \
+                || echo "FAILED: stencil_nvshmem neighbor at $N ranks, repetition $REP"
+        fi
+    done
 done
 
 echo "======================================================================"
@@ -219,32 +272,34 @@ VARIANTS="staged gpumpi ipc ipc_rp mpiwrap mpiwrap_rp"
 declare -A FABRIC_ELAPSED   # keyed "$V_$N", for the section 4 comparison
 
 for N in $RANKS_LIST; do
-    declare -A ENERGY ELAPSED
-    echo ""
-    echo "########## $N ranks ##########"
-    for V in $VARIANTS; do
-        case $V in
-            mpiwrap*) PRE="env LD_PRELOAD=$MPIWRAP_LIB" ;;
-            nvshmem)  PRE="$NVSHMEM_ENV" ;;
-            *)        PRE="" ;;
-        esac
-        echo "--- lulesh_$V, $N ranks ---"
-        $LAUNCH $N $PRE ./$BUILD/lulesh_$V -s $LULESH_SIZE 2>&1 | tee run.tmp \
-            || echo "FAILED: lulesh_$V at $N ranks"
-        ENERGY[$V]=$(awk '/Final Origin Energy/{print $5}' run.tmp)
-        ELAPSED[$V]=$(awk '/Elapsed time/{print $4}' run.tmp)
-        case $V in mpiwrap*) FABRIC_ELAPSED[${V}_${N}]=${ELAPSED[$V]:-} ;; esac
+    for REP in $(seq 1 $LULESH_REPS); do
+        declare -A ENERGY ELAPSED
+        echo ""
+        echo "########## $N ranks, repetition $REP ##########"
+        for V in $VARIANTS; do
+            case $V in
+                mpiwrap*) PRE="env LD_PRELOAD=$MPIWRAP_LIB" ;;
+                nvshmem)  PRE="$NVSHMEM_ENV" ;;
+                *)        PRE="" ;;
+            esac
+            echo "--- lulesh_$V, $N ranks, repetition $REP ---"
+            $LAUNCH $N $PRE ./$BUILD/lulesh_$V -s $LULESH_SIZE 2>&1 | tee run.tmp \
+                || echo "FAILED: lulesh_$V at $N ranks, repetition $REP"
+            ENERGY[$V]=$(awk '/Final Origin Energy/{print $5}' run.tmp)
+            ELAPSED[$V]=$(awk '/Elapsed time/{print $4}' run.tmp)
+            case $V in mpiwrap*) FABRIC_ELAPSED[${V}_${N}]=${ELAPSED[$V]:-} ;; esac
+        done
+        echo ""
+        echo "Summary, $N ranks, repetition $REP:"
+        printf "  %-12s %-16s %s\n" "variant" "energy" "elapsed(s)"
+        for V in $VARIANTS; do
+            CHECK="MATCH"
+            [ -z "${ENERGY[$V]:-}" ] && CHECK="MISSING"
+            [ -n "${ENERGY[$V]:-}" ] && [ "${ENERGY[$V]}" != "${ENERGY[staged]:-}" ] && CHECK="MISMATCH"
+            printf "  %-12s %-16s %-10s %s\n" "$V" "${ENERGY[$V]:-}" "${ELAPSED[$V]:-}" "$CHECK"
+        done
+        unset ENERGY ELAPSED
     done
-    echo ""
-    echo "Summary, $N ranks:"
-    printf "  %-12s %-16s %s\n" "variant" "energy" "elapsed(s)"
-    for V in $VARIANTS; do
-        CHECK="MATCH"
-        [ -z "${ENERGY[$V]:-}" ] && CHECK="MISSING"
-        [ -n "${ENERGY[$V]:-}" ] && [ "${ENERGY[$V]}" != "${ENERGY[staged]:-}" ] && CHECK="MISMATCH"
-        printf "  %-12s %-16s %-10s %s\n" "$V" "${ENERGY[$V]:-}" "${ELAPSED[$V]:-}" "$CHECK"
-    done
-    unset ENERGY ELAPSED
 done
 
 echo ""
