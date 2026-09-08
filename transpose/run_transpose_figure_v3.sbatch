@@ -4,6 +4,13 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --gpus=4
+# Host memory, not GPU. Job 87249 was OOM-killed at order 65536 on the 44 GB
+# partition default: the verifier copies each rank's whole B block to the host
+# to check it, which is order*(order/P)*8 bytes -- 8 GB per rank at 65536, so
+# 32 GB across four ranks before anything else. Nodes have 755 GB; ask for
+# enough that the sweep is bounded by GPU memory rather than by the verifier's
+# host mirror. 98304 would need 72 GB of mirror alone.
+#SBATCH --mem=256G
 #SBATCH --time=03:00:00
 #SBATCH --output=transpose_fig_v3_%j.out
 
