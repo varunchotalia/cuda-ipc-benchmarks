@@ -77,13 +77,34 @@ nvcc -O3 $ARCH /tmp/isl_ipc_$SIZE.cu -o /tmp/isl_ipc_$SIZE -lmpi \
     || { echo "BUILD FAILED"; exit 1; }
 echo "build done"
 
+# Both handshakes, because the earlier runs only ever tested barrier and that
+# confounded two different explanations for the np=8 failure on this node:
+#
+#   reachability -- the cross-island peer is not actually writable, or
+#   the barrier race -- barrier mode is SINGLE-buffered (slot is pinned to 0,
+#     see stencil_ipc.cu), and we already know that races. The PCIe hop across
+#     the island boundary is slow enough to make ranks drift, which is exactly
+#     the condition that triggers it.
+#
+# The peer-access gate added in 95a4607 did not fire in job 87205 -- no
+# [winipc] line appeared -- because cudaDeviceCanAccessPeer returns true across
+# the boundary: CUDA will do P2P over PCIe, it is simply not NVLink. So the
+# reachability story is unproven and the gate may be inert.
+#
+# DISCRIMINATOR: neighbor mode is double-buffered and is otherwise identical.
+#   barrier wrong + neighbor RIGHT -> it was the single-buffer race all along,
+#                                     not reachability. Revert 95a4607.
+#   both wrong                     -> the cross-island write really is lost;
+#                                     the gate needs a working test instead.
 for NP in 4 8; do
-    echo ""
-    echo "############ np=$NP size=$SIZE barrier -- FULL OUTPUT ############"
-    STENCIL_WARMUP=20 STENCIL_SYNC=barrier \
-      mpirun -np $NP -x STENCIL_WARMUP -x STENCIL_SYNC -x UCX_LOG_LEVEL \
-      env LD_PRELOAD=$MPIWRAP /tmp/isl_ipc_$SIZE 2>&1
-    echo "############ end np=$NP ############"
+    for SYNC in barrier neighbor; do
+        echo ""
+        echo "############ np=$NP size=$SIZE $SYNC -- FULL OUTPUT ############"
+        STENCIL_WARMUP=20 STENCIL_SYNC=$SYNC \
+          mpirun -np $NP -x STENCIL_WARMUP -x STENCIL_SYNC -x UCX_LOG_LEVEL \
+          env LD_PRELOAD=$MPIWRAP /tmp/isl_ipc_$SIZE 2>&1
+        echo "############ end np=$NP $SYNC ############"
+    done
 done
 
 echo ""
