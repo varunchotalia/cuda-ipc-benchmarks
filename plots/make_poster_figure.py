@@ -401,37 +401,49 @@ axb.legend(frameon=False, loc="lower right", ncol=1, fontsize=9.5,
 
 # ---- panel (c): LULESH figure of merit --------------------------------------
 lulesh = load_lulesh()
-# Descending by FOM, exactly as the paper figure orders it.
-order = sorted(lulesh, key=lambda v: -lulesh[v][0])
+# Horizontal bars in Gzone/s with percentage gains against host-staged MPI,
+# ascending upward -- the paper's Figure 5 exactly. It was a vertical chart in
+# Mzone/s without the percentages, which is the same data drawn as a different
+# figure. A poster viewer who has seen the paper should recognise this one.
+order = sorted(lulesh, key=lambda v: lulesh[v][0])          # ascending upward
 labels = [LULESH_DISPLAY.get(v, v) for v in order]
 colours = [LULESH_MODE_COLOR[LULESH_CATEGORY[v]] for v in order]
+# load_lulesh already divides the CSV column by 1e6, and that IS Gzone/s: the
+# column is named fom_z_per_s but is off by a factor of 1000, cross-checked in
+# make_lulesh_plots.py against the header's own zone_cycles. Dividing again
+# prints 0.0018 Gzone/s, which is a unit error, not a value.
 med = np.array([lulesh[v][0] for v in order])
 lo = np.array([lulesh[v][1] for v in order])
 hi = np.array([lulesh[v][2] for v in order])
+staged_fom = lulesh["staged"][0]
 
-xc = np.arange(len(order))
-recede(axc)
-axc.bar(xc, med, 0.72, color=colours, zorder=3,
-        yerr=[med - lo, hi - med],
-        error_kw=dict(ecolor=INK2, elinewidth=1.4, capsize=3, zorder=4))
-axc.set_xticks(xc)
-axc.set_xticklabels(labels, rotation=25, ha="right")
-axc.tick_params(axis="x", labelsize=9.5)
-axc.set_ylabel("Figure of merit (Mzone/s)")
-axc.set_title("(c)  LULESH: 8 GPUs, one node, 5-run median", loc="left", color=INK)
-axc.set_ylim(0, max(med) * 1.38)
+yc = np.arange(len(order))
+recede(axc, axis="x")
+axc.barh(yc, med, 0.72, color=colours, zorder=3,
+         xerr=[med - lo, hi - med],
+         error_kw=dict(ecolor=INK2, elinewidth=1.4, capsize=3, zorder=4))
+axc.set_yticks(yc)
+axc.set_yticklabels(labels, fontsize=10)
+axc.set_xlim(0, max(med) * 1.52)
+axc.set_xlabel("FOM (Gzone/s)")
+axc.set_title("(c)  LULESH: 8 GPUs, one node, 5-run median",
+              loc="left", color=INK)
 
-for xi, m in zip(xc, med):
-    axc.text(xi, m + max(med) * 0.035, f"{m:.2f}",
-             va="bottom", ha="center", fontsize=9.5, color=INK)
+# Value plus gain over host-staged MPI, as the paper labels them. staged is the
+# baseline and carries no percentage.
+for yi, (v, m) in enumerate(zip(order, med)):
+    gain = m / staged_fom - 1.0
+    txt = f"{m:.3f} Gz/s" if v == "staged" else f"{m:.3f} Gz/s ({gain:+.1%})"
+    axc.text(m + max(med) * 0.02, yi, txt, va="center", ha="left",
+             fontsize=9, color=INK)
 
 from matplotlib.patches import Patch  # noqa: E402
 axc.legend(handles=[Patch(facecolor=LULESH_MODE_COLOR[c],
                           label=LULESH_MODE_LABEL[c])
                     for c in LULESH_MODE_ORDER],
-           frameon=False, loc="upper right", ncol=2, columnspacing=0.7,
-           handlelength=1.0, handletextpad=0.35, borderaxespad=0.1,
-           fontsize=9)
+           frameon=False, loc="lower right", ncol=1, columnspacing=0.7,
+           handlelength=1.0, handletextpad=0.35, borderaxespad=0.3,
+           fontsize=8.5)
 
 # ---- panel (d): GB200 NVL scale-out, normalised ------------------------------
 gb = load_gb200()
