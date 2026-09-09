@@ -302,8 +302,8 @@ GB200_PLAN = {
     "stencil": {
         "baseline": "host-staged MPI",
         # GPU-aware MPI is absent on purpose (warmup=0 artifact, see the top
-        # of this file). It is marked "not measured" in the panel rather than
-        # dropped silently, because a missing bar in a group reads as a zero.
+        # of this file). The stencil groups simply draw two bars; None here
+        # takes no slot at all.
         "series": [("WinIPC",  WINIPC),
                    (None,      GPUMPI),
                    ("NVSHMEM", NVSHMEM)],
@@ -382,7 +382,7 @@ for key, label, colour, marker in [
     ("winipc_p", "WinIPC direct, per-phase",    "#9a86e0", "v"),
     ("winipc",  "WinIPC buffered",              WINIPC,  "o"),
     ("gpumpi",  "GPU-aware MPI",       GPUMPI,  "s"),
-    ("nvshmem", "NVSHMEM",             NVSHMEM, "^"),
+        ("nvshmem", "NVSHMEM buffered",   NVSHMEM, "^"),
     ("staged",  "Host-staged MPI",     STAGED,  "D"),
 ]:
     axb.plot(ORDERS, TRANSPOSE_GBS[key], marker=marker, color=colour,
@@ -521,28 +521,23 @@ axd.legend(handles=[
 # Caption, hard-wrapped by hand. Matplotlib does not wrap fig.text, so a
 # single long string silently runs off the right edge of the canvas -- which
 # it did, truncating the stencil GPU-aware caveat mid-word.
-fig.text(0.008, 0.074,
-         "(a)-(c) H200 SXM (NVSwitch), single node.  (c) is the paper's LULESH "
-         "figure: same data, bars are medians of 5 runs, whiskers min/max.",
-         fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.052,
+         "(a)-(c) H200 SXM (NVSwitch), single node.  (c) whiskers span min to "
+         "max over the 5 runs.",
+         fontsize=9, color=INK2, ha="left")
+fig.text(0.008, 0.030,
          "(b) B += Aᵀ, the Parallel Research Kernels operation the paper "
          "reports.  At 16384²: WinIPC buffered is 8.8× host-staged MPI and "
          "1.4% behind GPU-aware MPI.",
          fontsize=9, color=INK2, ha="left")
-fig.text(0.008, 0.030,
+fig.text(0.008, 0.008,
          "(d) GB200 NVL scale-out system, 4 and 8 nodes, cross-node CUDA "
          "fabric-handle window.  WinIPC = buffered variant, as in (b) — its "
          "single-kernel direct variant reaches 5.3× (16 GPUs) and 3.2× "
          "(32 GPUs) on transpose.",
          fontsize=9, color=INK2, ha="left")
-fig.text(0.008, 0.008,
-         "Stencil GPU-aware MPI is omitted from (d): those runs used zero warmup, "
-         "so one-time lazy connection setup was charged to that variant alone.  "
-         "(d) is two configurations, not a scaling curve.",
-         fontsize=9, color=INK2, ha="left")
 
-fig.subplots_adjust(left=0.062, right=0.982, top=0.945, bottom=0.150)
+fig.subplots_adjust(left=0.062, right=0.982, top=0.945, bottom=0.128)
 
 for path, kwargs in [("poster_summary.pdf", dict(metadata={"CreationDate": None})),
                      ("poster_summary.png", dict(dpi=300))]:
