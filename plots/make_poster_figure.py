@@ -205,7 +205,16 @@ TRANSPOSE_GBS = {
     # gives that lead back at the large orders, where the fixed launch and
     # sync costs it removes stop mattering and accumulate's read-modify-write
     # traffic dominates. Both curves, or neither.
+    #
+    # Per-phase is the third, and it is what makes the other two interpretable.
+    # It writes peer pointers directly like single-kernel but keeps a barrier
+    # between destinations, so the gap between the two purple curves is the
+    # cost of those barriers alone -- 591 vs 281 GB/s at 1024^2 -- rather than
+    # anything about how the pointer was obtained. Without it a reader can
+    # reasonably assume peer pointers are what made single-kernel fast. The
+    # paper carries it in every transpose figure for that reason.
     "winipc_d": [591.0, 1167.8, 882.5,  889.2,  884.7],  # direct, single-kernel
+    "winipc_p": [281.2,  555.0, 695.3,  811.2,  865.4],  # direct, per-phase
     "winipc":  [188.1, 526.6, 836.7, 1014.2, 1062.4],   # buffered
     "gpumpi":  [202.2, 547.7, 853.2, 1022.8, 1077.2],
     "nvshmem": [111.1, 355.9, 723.4,  979.9, 1073.8],   # buffered
@@ -369,8 +378,9 @@ axa.legend(frameon=False, loc="upper right", ncol=1)
 # ---- panel (b): transpose bandwidth -----------------------------------------
 recede(axb)
 for key, label, colour, marker in [
-    ("winipc_d", "WinIPC direct",      HANDIPC, "^"),
-    ("winipc",  "WinIPC buffered",     WINIPC,  "o"),
+    ("winipc_d", "WinIPC direct, single-kernel", HANDIPC, "^"),
+    ("winipc_p", "WinIPC direct, per-phase",    "#9a86e0", "v"),
+    ("winipc",  "WinIPC buffered",              WINIPC,  "o"),
     ("gpumpi",  "GPU-aware MPI",       GPUMPI,  "s"),
     ("nvshmem", "NVSHMEM",             NVSHMEM, "^"),
     ("staged",  "Host-staged MPI",     STAGED,  "D"),
@@ -389,8 +399,8 @@ axb.set_title("(b)  Transpose  B += Aᵀ: 4 GPUs, one node", loc="left", color=I
 # right, so the upper left -- where this legend used to sit -- is exactly where
 # the direct variant's rise is. Down here it covers only the flat host-staged
 # line and empty space below the crossover.
-axb.legend(frameon=False, loc="lower right", ncol=1, fontsize=9.5,
-           borderaxespad=1.8)
+axb.legend(frameon=False, loc="lower right", ncol=1, fontsize=9,
+           borderaxespad=0.4, bbox_to_anchor=(1.0, 0.14))
 
 # The one number a reader should take away from this panel. Named in the text
 # rather than pointed at with a leader line -- any arrow to the 16384² point
@@ -523,7 +533,8 @@ fig.text(0.008, 0.052,
 fig.text(0.008, 0.030,
          "(d) GB200 NVL scale-out system, 4 and 8 nodes, cross-node CUDA "
          "fabric-handle window.  WinIPC = buffered variant, as in (b) — its "
-         "direct variant reaches 5.3× (16 GPUs) and 3.2× (32 GPUs) on transpose.",
+         "single-kernel direct variant reaches 5.3× (16 GPUs) and 3.2× "
+         "(32 GPUs) on transpose.",
          fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.008,
          "Stencil GPU-aware MPI is omitted from (d): those runs used zero warmup, "
