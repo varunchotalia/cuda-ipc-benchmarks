@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Single combined results figure for the poster.
 
-    plots/poster_summary.pdf   (vector, for print)
-    plots/poster_summary.png   (300 dpi, for slides/preview)
+    plots/poster_figure.pdf   (vector, for print)
+    plots/poster_figure.png   (300 dpi, for slides/preview)
 
 One figure, four panels in a 2x2, one story: an interposed MPI-window
 abstraction (WinIPC) reaches hand-written CUDA IPC performance on every
@@ -522,25 +522,25 @@ axd.legend(handles=[
 # single long string silently runs off the right edge of the canvas -- which
 # it did, truncating the stencil GPU-aware caveat mid-word.
 fig.text(0.008, 0.052,
-         "(a)-(c) H200 SXM (NVSwitch), single node.  (c) whiskers span min to "
-         "max over the 5 runs.",
+         "(a)-(c) H200 SXM (NVSwitch), single node.  Transpose and stencil are "
+         "Parallel Research Kernels benchmarks; (c) whiskers span min to max "
+         "over the 5 runs.",
          fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.030,
-         "(b) B += Aᵀ, the Parallel Research Kernels operation the paper "
-         "reports.  At 16384²: WinIPC buffered is 8.8× host-staged MPI and "
-         "1.4% behind GPU-aware MPI.",
+         "(b) At 16384², WinIPC buffered reaches 8.8× host-staged MPI, within "
+         "1.4% of GPU-aware MPI.",
          fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.008,
-         "(d) GB200 NVL scale-out system, 4 and 8 nodes, cross-node CUDA "
-         "fabric-handle window.  WinIPC = buffered variant, as in (b) — its "
-         "single-kernel direct variant reaches 5.3× (16 GPUs) and 3.2× "
-         "(32 GPUs) on transpose.",
+         "(d) GB200 NVL, 4 and 8 nodes, over a cross-node CUDA fabric-handle "
+         "window.  WinIPC bars are the buffered variant; its single-kernel "
+         "direct variant reaches 5.3× at 16 GPUs and 3.2× at 32 GPUs on "
+         "transpose.",
          fontsize=9, color=INK2, ha="left")
 
 fig.subplots_adjust(left=0.062, right=0.982, top=0.945, bottom=0.128)
 
-for path, kwargs in [("poster_summary.pdf", dict(metadata={"CreationDate": None})),
-                     ("poster_summary.png", dict(dpi=300))]:
+for path, kwargs in [("poster_figure.pdf", dict(metadata={"CreationDate": None})),
+                     ("poster_figure.png", dict(dpi=300))]:
     out = os.path.join(HERE, path)
     fig.savefig(out, **kwargs)
     print(f"wrote {out}")
