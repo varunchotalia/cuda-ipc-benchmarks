@@ -49,9 +49,11 @@ taken under different builds or UCX settings:
         NOT results/transpose_results.md -- that file's IPC/MPI half is
         2026-05-05 data stitched to 2026-08-07 NVSHMEM data, and its
         buffered-IPC column is ~10-12% low at the small orders.
-    (c) job 61540, h200x8-03, 2026-08-13. -s 45, 3145 iterations, 8 ranks on
-        8 H200 SXM, 5 reps x 9 variants. Source: results/lulesh_lifecycle_61540.md
-        and results/lulesh_poster_fom.csv (extracted from that job's log).
+    (c) jobs 60796-60800, h200x8-03, 2026-08-06. -s 45, 3145 iterations,
+        8 ranks on 8 H200 SXM, 5 single-rep jobs x 9 variants. Source:
+        results/lulesh_variance.csv -- the SAME file the paper's Figure 5 is
+        generated from, so the two figures cannot disagree. All nine medians
+        match that figure to three decimals.
     (d) plots/local_nvl/gb200_nvl.csv -- the same cleared subset that
         gb200_transpose.pdf and gb200_stencil.pdf are drawn from. Read from
         that CSV rather than transcribed here, so the poster cannot drift away
@@ -181,6 +183,17 @@ STENCIL_MS = {
 
 # =============================================================================
 # (b) Transpose -- job 63328, 4 GPUs, B += A^T, GB/s (median over reps)
+#
+# WHY ACCUMULATE AND NOT OVERWRITE. Job 63328 measured both. B += A^T is the
+# Parallel Research Kernels operation the benchmark is defined by; B = A^T is
+# an extension we added. It is also the setting every number the paper quotes
+# comes from -- the abstract's "up to 3.0x higher throughput than GPU-aware
+# MPI" is single-kernel at 1024^2 under accumulate (591 vs 202 GB/s here).
+# Overwrite is the friendlier picture (722 vs 207, and 1349 GB/s at 4096^2
+# where accumulate manages 883, because accumulating into peer memory has to
+# read the destination before writing the sum). Showing the friendlier one on
+# a poster while the paper reports the other is how the two end up disagreeing
+# in front of a reviewer, so the poster follows the paper.
 # =============================================================================
 ORDERS = [1024, 2048, 4096, 8192, 16384]
 TRANSPOSE_GBS = {
@@ -202,23 +215,46 @@ TRANSPOSE_GBS = {
 # =============================================================================
 # (c) LULESH -- job 61540, 8 GPUs, 5 reps, FOM in zones/s
 # =============================================================================
-LULESH_CSV = os.path.join(ROOT, "results", "lulesh_poster_fom.csv")
-
 # variant key -> (label drawn, colour, mechanism note). The CSV keys are still
 # `mpiwrap*` because renaming the build identifiers would break queued Slurm
 # jobs whose script text Slurm froze at submit time; the rename to WinIPC lives
 # here, at the display edge, exactly as make_lulesh_plots.py does it.
-LULESH_STYLE = {
-    "direct":     ("Direct (no halo pack)",   HANDIPC),
-    "ipc_rp":     ("CUDA IPC, remote-pack",   HANDIPC),
-    "mpiwrap_rp": ("WinIPC, remote-pack",     WINIPC),
-    "ipc":        ("CUDA IPC, pack+copy",     HANDIPC),
-    "mpiwrap":    ("WinIPC, pack+copy",       WINIPC),
-    "nvshmem":    ("NVSHMEM",                 NVSHMEM),
-    "gpumpi":     ("GPU-aware MPI",           GPUMPI),
-    "staged":     ("Host-staged MPI",         STAGED),
-    "shmwin":     ("Host MPI window",         STAGED),
+# Panel (c) is the paper's LULESH figure, not a poster-specific redraw. Same
+# source CSV, same nine variants, same labels, same mode colouring, so a reader
+# who has seen the paper sees the same bars and a reviewer cannot find two
+# different numbers for one experiment.
+#
+# It previously read results/lulesh_poster_fom.csv (job 61540) while the paper
+# figure reads results/lulesh_variance.csv (jobs 60796-60800). Both are valid
+# 5-rep samples of the same configuration and they agree to ~1.8%, but they are
+# not the same numbers -- direct was 1.80 here against 1.832 in the paper. One
+# of those had to go, and the paper's is the published one.
+#
+# Colours are by MECHANISM MODE, matching make_lulesh_plots.py: mode B direct
+# field writes, mode C remote-pack, mode A pack+copy, two-sided MPI, host
+# shared window. That grouping is what makes the handwritten/interposed pairs
+# read as pairs.
+BLUE_P, GREEN_P, MAGENTA_P, YELLOW_P = "#2a78d6", "#008300", "#e87ba4", "#eda100"
+LULESH_CATEGORY = {
+    "direct": "B", "ipc_rp": "C", "mpiwrap_rp": "C",
+    "ipc": "A", "mpiwrap": "A", "nvshmem": "A",
+    "gpumpi": "T", "staged": "T", "shmwin": "W",
 }
+LULESH_MODE_COLOR = {"B": BLUE_P, "C": GREEN_P, "A": MAGENTA_P,
+                     "T": YELLOW_P, "W": STAGED}
+LULESH_MODE_LABEL = {
+    "B": "mode B - direct field writes",
+    "C": "mode C - remote-pack",
+    "A": "mode A - pack + copy",
+    "T": "two-sided MPI",
+    "W": "host shared window",
+}
+LULESH_MODE_ORDER = ["B", "C", "A", "T", "W"]
+# Same display rename the paper figure applies: the CSV keys stay `mpiwrap*`
+# because the build identifiers and queued job scripts still use them.
+LULESH_DISPLAY = {"mpiwrap": "winipc", "mpiwrap_rp": "winipc_rp"}
+
+LULESH_CSV = os.path.join(ROOT, "results", "lulesh_variance.csv")
 
 
 def load_lulesh():
@@ -349,33 +385,26 @@ axb.set_xticklabels([f"{o}²" for o in ORDERS], rotation=20, ha="right")
 axb.set_xlabel("Matrix order")
 axb.set_ylabel("Achieved bandwidth (GB/s)")
 axb.set_title("(b)  Transpose  B += Aᵀ: 4 GPUs, one node", loc="left", color=INK)
-axb.legend(frameon=False, loc="upper left")
+# Lower right: the five curves all climb left-to-right and converge at the top
+# right, so the upper left -- where this legend used to sit -- is exactly where
+# the direct variant's rise is. Down here it covers only the flat host-staged
+# line and empty space below the crossover.
+axb.legend(frameon=False, loc="lower right", ncol=1, fontsize=9.5,
+           borderaxespad=1.8)
 
 # The one number a reader should take away from this panel. Named in the text
 # rather than pointed at with a leader line -- any arrow to the 16384² point
 # has to cross the NVSHMEM and staged curves to get there.
-axb.text(15800, 430,
-         "WinIPC buffered at 16384²:\n8.8× host-staged MPI,\n1.4% behind GPU-aware MPI",
-         fontsize=10, color=INK2, ha="right", va="center")
+# The 16384^2 summary moved to the figure caption: it is prose, it was sitting
+# in the only clear space on the panel, and the legend needs that space more
+# than a sentence does.
 
 # ---- panel (c): LULESH figure of merit --------------------------------------
 lulesh = load_lulesh()
-# Keep the paired CUDA IPC and WinIPC configurations adjacent. The compact
-# vertical layout leaves the panel readable at poster scale and makes the
-# near-equality of each pair visible without long labels running into panel b.
-order = ["direct", "ipc_rp", "mpiwrap_rp", "ipc", "mpiwrap", "nvshmem",
-         "gpumpi", "staged"]
-labels = [
-    "IPC-D",
-    "IPC-RP",
-    "WinIPC-RP",
-    "IPC-A",
-    "WinIPC-A",
-    "NVSHMEM",
-    "GPU MPI",
-    "Staged MPI",
-]
-colours = [LULESH_STYLE[v][1] for v in order]
+# Descending by FOM, exactly as the paper figure orders it.
+order = sorted(lulesh, key=lambda v: -lulesh[v][0])
+labels = [LULESH_DISPLAY.get(v, v) for v in order]
+colours = [LULESH_MODE_COLOR[LULESH_CATEGORY[v]] for v in order]
 med = np.array([lulesh[v][0] for v in order])
 lo = np.array([lulesh[v][1] for v in order])
 hi = np.array([lulesh[v][2] for v in order])
@@ -397,14 +426,12 @@ for xi, m in zip(xc, med):
              va="bottom", ha="center", fontsize=9.5, color=INK)
 
 from matplotlib.patches import Patch  # noqa: E402
-axc.legend(handles=[
-    Patch(facecolor=HANDIPC, label="CUDA IPC"),
-    Patch(facecolor=WINIPC, label="WinIPC"),
-    Patch(facecolor=NVSHMEM, label="NVSHMEM"),
-    Patch(facecolor=GPUMPI, label="GPU-aware MPI"),
-    Patch(facecolor=STAGED, label="Host-staged MPI"),
-], frameon=False, loc="upper right", ncol=2, columnspacing=0.7,
-           handlelength=1.0, handletextpad=0.35, borderaxespad=0.1)
+axc.legend(handles=[Patch(facecolor=LULESH_MODE_COLOR[c],
+                          label=LULESH_MODE_LABEL[c])
+                    for c in LULESH_MODE_ORDER],
+           frameon=False, loc="upper right", ncol=2, columnspacing=0.7,
+           handlelength=1.0, handletextpad=0.35, borderaxespad=0.1,
+           fontsize=9)
 
 # ---- panel (d): GB200 NVL scale-out, normalised ------------------------------
 gb = load_gb200()
@@ -472,9 +499,14 @@ axd.legend(handles=[
 # Caption, hard-wrapped by hand. Matplotlib does not wrap fig.text, so a
 # single long string silently runs off the right edge of the canvas -- which
 # it did, truncating the stencil GPU-aware caveat mid-word.
+fig.text(0.008, 0.074,
+         "(a)-(c) H200 SXM (NVSwitch), single node.  (c) is the paper's LULESH "
+         "figure: same data, bars are medians of 5 runs, whiskers min/max.",
+         fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.052,
-         "(a)-(c) H200 SXM (NVSwitch), single node.  (c) bars are medians of "
-         "5 runs, whiskers min/max;  (a), (b) and (d) are single runs per point.",
+         "(b) B += Aᵀ, the Parallel Research Kernels operation the paper "
+         "reports.  At 16384²: WinIPC buffered is 8.8× host-staged MPI and "
+         "1.4% behind GPU-aware MPI.",
          fontsize=9, color=INK2, ha="left")
 fig.text(0.008, 0.030,
          "(d) GB200 NVL scale-out system, 4 and 8 nodes, cross-node CUDA "
@@ -487,7 +519,7 @@ fig.text(0.008, 0.008,
          "(d) is two configurations, not a scaling curve.",
          fontsize=9, color=INK2, ha="left")
 
-fig.subplots_adjust(left=0.062, right=0.982, top=0.945, bottom=0.125)
+fig.subplots_adjust(left=0.062, right=0.982, top=0.945, bottom=0.150)
 
 for path, kwargs in [("poster_summary.pdf", dict(metadata={"CreationDate": None})),
                      ("poster_summary.png", dict(dpi=300))]:
