@@ -57,10 +57,19 @@ for BIN in nvd_single nvd_buffered; do
     for ORDER in 1024 32768; do
         echo ""
         echo "########## $BIN order=$ORDER  NVSHMEM_DEBUG=INFO ##########"
-        TRANSPOSE_WARMUP=20 NVSHMEM_DEBUG=INFO NVSHMEM_INFO=1 \
+        # NVSHMEM_INFO=1 is NOT set: it dumps ~200 lines of build configuration
+        # before the run even starts, and job 92224 lost every rate line to a
+        # head -60 that the dump had already consumed. NVSHMEM_DEBUG=INFO alone
+        # gives the runtime transport decisions, which is what we came for.
+        #
+        # Filter rather than truncate: keep the benchmark's own output and the
+        # NVSHMEM lines about transports, peers and the heap, drop the rest.
+        TRANSPOSE_WARMUP=20 NVSHMEM_DEBUG=INFO \
           mpirun -np 4 -x TRANSPOSE_WARMUP -x NVSHMEM_BOOTSTRAP -x LD_LIBRARY_PATH \
-                 -x NVSHMEM_DEBUG -x NVSHMEM_INFO -x UCX_LOG_LEVEL \
-                 /tmp/$BIN 100 $ORDER 2>&1 | grep -viE '^\[' | head -60
+                 -x NVSHMEM_DEBUG -x UCX_LOG_LEVEL \
+                 /tmp/$BIN 100 $ORDER 2>&1 \
+          | grep -iE 'Rate \(MB/s\)|Solution validates|ERROR|transpose|transport|peer|p2p|nvlink|proxy|remote|heap|ibgda|channel|WARN' \
+          | head -80
         echo "########## end $BIN order=$ORDER ##########"
     done
 done
