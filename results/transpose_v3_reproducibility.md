@@ -87,3 +87,64 @@ the small order selects a different transport path.
 measured in this job but excluded until it is explained; a 45x-wrong curve
 beside correct ones is worse than a missing panel. Restore the NVSHMEM panel
 once job 92224 or its successor accounts for the loss.
+
+---
+
+## 5. Resolved: NVSHMEM on this cluster is bimodal, not slow
+
+Job 92232 (h200x4-02, clean timed runs, no debug output, 3 reps x 5 orders x 2
+modes, accumulate off). Raw log gitignored.
+
+| binary | order | the three reps (GB/s) | best | 63328 | best/ref |
+|---|--:|--:|--:|--:|--:|
+| nvsingle | 1024 | 0.6 / 15.5 / 44.0 | 44.0 | 415.1 | 11% |
+| nvsingle | 2048 | 20.8 / 221.3 / **1085.0** | 1085.0 | 1061.4 | **102%** |
+| nvsingle | 4096 | 65.6 / 230.4 / 269.7 | 269.7 | 1215.6 | 22% |
+| nvsingle | 16384 | 151.7 / 171.9 / 175.4 | 175.4 | 1295.0 | 14% |
+| nvbuffered | 1024 | 0.2 / 11.0 / 18.1 | 18.1 | 120.0 | 15% |
+| nvbuffered | 4096 | 3.3 / 34.0 / 326.7 | 326.7 | 751.5 | 43% |
+| nvbuffered | 16384 | 50.8 / 96.6 / 99.2 | 99.2 | 1167.0 | 9% |
+
+**30 runs, every one validates, spanning 0.2 to 1085 GB/s — a 5421x range
+within one job on one node.** Only 1 of 24 comparable runs lands within 20% of
+the 63328 reference. That one run, nvsingle at order 2048 reaching 102% of
+reference, is the important one: the hardware and the library CAN deliver the
+expected rate. They usually do not.
+
+### What this is not
+
+- **Not node-specific.** Reproduces on h200x4-02 here and h200x4-04 in 90161.
+- **Not transport selection.** Job 92230 with `NVSHMEM_DEBUG=INFO` shows
+  `P2P list: 0 1 2 3` on every rank and IBRC explicitly skipped ("neither
+  nv_peer_mem, or nvidia_peermem detected"). All four GPUs use P2P. Correct.
+- **Not our code.** `transpose_nvshmem.cu` is md5-identical to the version that
+  measured 415-1295 GB/s in 63328, with identical build flags and launch.
+- **Not the reps.** Tested: restricting 90161 to rep 1 alone still gives -89%
+  to -94%, and here the good run is rep 3 at one order and rep 1 at another.
+- **Not a correctness problem.** Every affected run validates.
+
+### Why 63328 looked fine
+
+**63328 ran the nv\* modes with ONE repetition per cell.** A single sample
+cannot show a bimodal distribution. It landed in the fast mode and was recorded
+as the measurement. 90161 added repetitions and exposed the spread; 92232
+confirms it on another node.
+
+### Consequence for the paper
+
+The intra-node NVSHMEM numbers behind Fig. 3c come from single runs (job 61541
+per the provenance note in `transpose_results.md`). If NVSHMEM here is bimodal,
+those are single samples of a distribution spanning two orders of magnitude,
+not measurements with an error bar. Before the camera-ready either
+
+  - re-measure NVSHMEM with enough repetitions to state a distribution, and
+    report the median with its spread rather than a point; or
+  - state plainly that the NVSHMEM comparison is a single run and that its
+    run-to-run variation on this cluster was not characterised.
+
+The WinIPC and MPI series are unaffected: they reproduce to within a few
+percent across both jobs (section 1) and their within-job CoV is under 6.3%
+(section 2). The instability is confined to NVSHMEM.
+
+Root cause is still unknown. What is established is that it is not the
+transport, not the node, not our source, and not the repetition structure.
