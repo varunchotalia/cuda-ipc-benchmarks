@@ -53,32 +53,53 @@ nvcc -O3 -rdc=true $ARCH $NVINC -DCOMM_MODE=1 -DACCUMULATE=0 \
      transpose/transpose_nvshmem.cu $NVLIB -o /tmp/nvd_buffered || { echo BUILD FAILED; exit 1; }
 echo "build done"
 
+# NVSHMEM_DEBUG has already answered its question (see the READ THIS block):
+# job 92230 showed "P2P list: 0 1 2 3" on every rank with IBRC explicitly
+# skipped, so all four GPUs use P2P and transport selection is NOT the cause.
+# The remaining question is purely how fast it is, so the timed runs below are
+# clean -- no debug output to drown them.
+#
+# Capture into a variable and grep afterwards. Two previous attempts lost every
+# result line to a `head` applied to the live stream: first to NVSHMEM_INFO's
+# 200-line config dump (92224), then to INFO lines that matched the filter's own
+# keywords (92230). Nothing is truncated before it is searched now.
+run_one() {   # $1=binary $2=order $3=rep
+    local BIN=$1 ORDER=$2 REP=$3 OUT R V
+    OUT=$(TRANSPOSE_WARMUP=20 \
+          mpirun -np 4 -x TRANSPOSE_WARMUP -x NVSHMEM_BOOTSTRAP \
+                 -x LD_LIBRARY_PATH -x UCX_LOG_LEVEL \
+                 /tmp/$BIN 100 $ORDER 2>&1)
+    R=$(echo "$OUT" | grep -oP 'Rate \(MB/s\): \K[0-9.]+')
+    V=$(echo "$OUT" | grep -c 'Solution validates')
+    echo "NVRESULT bin=$BIN order=$ORDER rep=$REP mbps=${R:-FAIL} validates=$V"
+    if [ -z "$R" ]; then
+        echo "---- no rate, full output ----"; echo "$OUT" | tail -40
+        echo "---- end ----"
+    fi
+}
+
+echo ""
+echo "### clean timed runs: is NVSHMEM slow on THIS node at small orders? ###"
 for BIN in nvd_single nvd_buffered; do
-    for ORDER in 1024 32768; do
-        echo ""
-        echo "########## $BIN order=$ORDER  NVSHMEM_DEBUG=INFO ##########"
-        # NVSHMEM_INFO=1 is NOT set: it dumps ~200 lines of build configuration
-        # before the run even starts, and job 92224 lost every rate line to a
-        # head -60 that the dump had already consumed. NVSHMEM_DEBUG=INFO alone
-        # gives the runtime transport decisions, which is what we came for.
-        #
-        # Filter rather than truncate: keep the benchmark's own output and the
-        # NVSHMEM lines about transports, peers and the heap, drop the rest.
-        TRANSPOSE_WARMUP=20 NVSHMEM_DEBUG=INFO \
-          mpirun -np 4 -x TRANSPOSE_WARMUP -x NVSHMEM_BOOTSTRAP -x LD_LIBRARY_PATH \
-                 -x NVSHMEM_DEBUG -x UCX_LOG_LEVEL \
-                 /tmp/$BIN 100 $ORDER 2>&1 \
-          | grep -iE 'Rate \(MB/s\)|Solution validates|ERROR|transpose|transport|peer|p2p|nvlink|proxy|remote|heap|ibgda|channel|WARN' \
-          | head -80
-        echo "########## end $BIN order=$ORDER ##########"
+    for ORDER in 1024 2048 4096 16384 32768; do
+        for REP in 1 2 3; do run_one $BIN $ORDER $REP; done
     done
 done
 
 echo ""
+echo "### one debug run kept for the record ###"
+DBG=$(TRANSPOSE_WARMUP=20 NVSHMEM_DEBUG=INFO \
+      mpirun -np 4 -x TRANSPOSE_WARMUP -x NVSHMEM_BOOTSTRAP -x LD_LIBRARY_PATH \
+             -x NVSHMEM_DEBUG -x UCX_LOG_LEVEL /tmp/nvd_single 100 1024 2>&1)
+echo "$DBG" | grep -oE 'P2P list:.*|Skipping transport|GDRCopy library not found|IBGDA [A-Za-z]+' | sort -u
+
+echo ""
 echo "=== READ THIS ==="
-echo "=== Compare the transport/path lines NVSHMEM prints at order 1024 against"
-echo "===   order 32768. A different remote-access path at the small order is"
-echo "===   the answer. Identical paths mean the cost is per-iteration"
-echo "===   synchronisation rather than transport selection, and the next step"
-echo "===   is the device-timer breakdown, not the NVSHMEM log."
-echo "=== 63328 reference (accum=0): nvsingle 415.1 GB/s at 1024, 1295.0 at 16384."
+echo "=== 63328 reference on this node class, accum=0, GB/s:"
+echo "===   nvsingle   415.1 @1024   1295.0 @16384"
+echo "===   nvbuffered 120.0 @1024   1167.0 @16384"
+echo "=== Job 90161 gave roughly 16-24 GB/s at order 1024."
+echo "=== If the rates here match 63328, the loss is specific to h200x4-04 or"
+echo "===   to something about job 90161, not to NVSHMEM on this cluster."
+echo "=== If they match 90161, NVSHMEM really has regressed and transport"
+echo "===   selection is not why -- P2P is being chosen correctly."
