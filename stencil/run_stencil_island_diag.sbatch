@@ -39,8 +39,18 @@
 # enablement, so it returns success across the island boundary; the interposer
 # inferred reachability from that success alone.
 #
-# FIXED by gating on cudaDeviceCanAccessPeer in MPI_Win_shared_query
-# (mpi-intercept/mpiwrap_ipc.cc). This job is now the VERIFICATION run.
+# The cudaDeviceCanAccessPeer gate in MPI_Win_shared_query was the first
+# attempted fix, and job 90162 (2026-09-09, built at 95a4607 WITH that gate,
+# md5 in the log) shows it does NOT work: np=8 still returned 0.6600931148,
+# no rank printed "cannot peer-access", and no rank fell back. On this node
+# cudaDeviceCanAccessPeer(3,4) reports TRUE and the open succeeds, so both
+# signals the gate relies on are reachability signals and neither observes a
+# store actually arriving.
+#
+# FIXED INSTEAD by the peer delivery probe in mpi-intercept/mpiwrap_ipc.cc
+# (verify_peer_delivery): at window construction every rank writes a sentinel
+# device-to-device into each peer, and the owner reports whether it arrived.
+# This job is the VERIFICATION run for that probe.
 #
 # HOW TO READ THE OUTPUT: this job prints the FULL per-rank output.
 #   PASS -> ranks 3 and 4 print "not IPC-reachable", take the MPI fallback,
