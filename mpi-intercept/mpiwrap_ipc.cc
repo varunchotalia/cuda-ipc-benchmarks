@@ -12,6 +12,11 @@
 // MPIWRAP_DISABLE_FABRIC is still honoured as a deprecated alias, so an
 // already-submitted job or a collaborator's script does not silently lose the
 // setting and run WITH fabric when it meant to run without.
+//
+// WINIPC_VERIFY_PEERS=0 skips the peer delivery probe (see
+// verify_peer_delivery below) and restores the pre-2026-09-10 behaviour, in
+// which a peer that opens but never delivers is reported as reachable. Use it
+// only to reproduce measurements taken before the probe existed.
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +41,7 @@ struct WinMeta {
     size_t* peer_sizes = nullptr;           // size of EACH rank, gathered at create
     int* peer_devs = nullptr;               // CUDA device ordinal of EACH rank
     void** opened = nullptr;                // cached opened pointers
+    int* reachable = nullptr;               // probe verdict, NULL if not probed
     void* self_base = nullptr;              // my own base pointer
     bool self_base_owned = false;           // true if we cudaMalloc'd it
     // fabric mode: multi-node NVLink (GB200/GH200 NVL-class systems)
@@ -202,6 +208,135 @@ static int fabric_win_allocate(MPI_Aint size, int disp_unit, MPI_Info info,
 #endif /* CUDA_VERSION >= 12040 */
 
 // ============================================================================
+// PEER DELIVERY PROBE
+// ============================================================================
+
+// Both cudaDeviceCanAccessPeer and a successful cudaIpcOpenMemHandle report
+// REACHABILITY, and on a node whose GPUs form bridged NVLink islands the two
+// can agree that a peer is fine while its writes never arrive. On h200x8-04
+// (GPUs 0-3 and 4-7 are NVLink islands, PCIe between them)
+// cudaDeviceCanAccessPeer(3,4) returns TRUE and the open succeeds, yet job
+// 90162 -- built at 95a4607, i.e. WITH the canAccessPeer gate in
+// MPI_Win_shared_query -- returned stencil L2 0.6600931148 instead of
+// 5.1449605829 at np=8, with no rank reporting a failure and no rank taking
+// its MPI fallback. np=4, inside a single island, was correct.
+//
+// Only an actual write, checked by the rank that owns the memory, separates
+// "the mapping opened" from "the store landed". Each rank writes a sentinel
+// into slot[myrank] of every peer; the Alltoall then turns "whose writes
+// reached me" into "which of my writes reached their target", which is the
+// direction MPI_Win_shared_query has to gate on. A peer that does not deliver
+// is reported unreachable, which is what makes the documented MPI fallback
+// actually happen on this topology.
+//
+// Costs one extra pass of opens, two barriers and one Alltoall per window.
+// Because it opens every peer eagerly it also moves the per-peer
+// cudaIpcOpenMemHandle cost out of MPI_Win_shared_query and into window
+// construction -- set WINIPC_VERIFY_PEERS=0 to reproduce setup-cost numbers
+// measured before this existed.
+static const unsigned long long PROBE_MAGIC = 0x57494E4950430000ULL; // "WINIPC"
+
+static void verify_peer_delivery(WinMeta* m)
+{
+    const char* off = getenv("WINIPC_VERIFY_PEERS");
+    if (off && off[0] == '0') return;
+    if (m->size < 2 || !m->handles || !m->opened) return;
+
+    const size_t slot_bytes = (size_t)m->size * sizeof(unsigned long long);
+
+    unsigned long long* saved = (unsigned long long*)malloc(slot_bytes);
+    unsigned long long* got   = (unsigned long long*)malloc(slot_bytes);
+    int* seen   = (int*)calloc(m->size, sizeof(int));
+    int* landed = (int*)calloc(m->size, sizeof(int));
+    // Device-side source for the sentinel: the applications reach a peer with
+    // a device-to-device copy, so the probe has to use one too. A host-to-
+    // device write can take a different route and would not prove the path the
+    // app is about to use.
+    unsigned long long* d_sentinel = nullptr;
+    if (cudaMalloc((void**)&d_sentinel, sizeof(unsigned long long))
+        != cudaSuccess) {
+        cudaGetLastError();
+        d_sentinel = nullptr;
+    }
+
+    // EVERY reason to skip has to be unanimous: a rank that bails out here
+    // after the others have entered the barriers below would hang the job.
+    int ok = (m->win_size >= slot_bytes && saved && got && seen && landed
+              && d_sentinel) ? 1 : 0;
+    int all_ok = 0;
+    PMPI_Allreduce(&ok, &all_ok, 1, MPI_INT, MPI_MIN, m->comm);
+    if (!all_ok) {
+        if (m->rank == 0)
+            LOG("peer delivery probe skipped (window < %zu bytes, or setup "
+                "allocation failed) -- a peer that opens but never delivers "
+                "will NOT be detected on this window", slot_bytes);
+        free(saved); free(got); free(seen); free(landed);
+        if (d_sentinel) cudaFree(d_sentinel);
+        return;
+    }
+
+    // MPI_Win_create is handed the application's own buffer, which may already
+    // hold live data, so the probe region is saved and put back afterwards.
+    cudaMemcpy(saved, m->self_base, slot_bytes, cudaMemcpyDeviceToHost);
+    cudaMemset(m->self_base, 0, slot_bytes);
+    cudaDeviceSynchronize();
+    PMPI_Barrier(m->comm);
+
+    const unsigned long long sentinel = PROBE_MAGIC + (unsigned long long)m->rank;
+    cudaMemcpy(d_sentinel, &sentinel, sizeof(sentinel), cudaMemcpyHostToDevice);
+    for (int p = 0; p < m->size; p++) {
+        if (p == m->rank) continue;
+        if (!m->opened[p]) {
+            void* ptr = nullptr;
+            if (cudaIpcOpenMemHandle(&ptr, m->handles[p],
+                                     cudaIpcMemLazyEnablePeerAccess)
+                != cudaSuccess) {
+                cudaGetLastError();   // cannot even open: stays unreachable
+                continue;
+            }
+            m->opened[p] = ptr;
+        }
+        unsigned long long* slot = (unsigned long long*)m->opened[p] + m->rank;
+        if (cudaMemcpy(slot, d_sentinel, sizeof(sentinel),
+                       cudaMemcpyDeviceToDevice) != cudaSuccess)
+            cudaGetLastError();
+    }
+    cudaDeviceSynchronize();
+    PMPI_Barrier(m->comm);
+
+    cudaMemcpy(got, m->self_base, slot_bytes, cudaMemcpyDeviceToHost);
+    for (int p = 0; p < m->size; p++)
+        seen[p] = (p == m->rank) ||
+                  (got[p] == PROBE_MAGIC + (unsigned long long)p);
+
+    // seen[p]   = "p's write reached me"
+    // landed[p] = "my write reached p"   (the transpose, which is what the
+    // caller of shared_query is about to rely on)
+    PMPI_Alltoall(seen, 1, MPI_INT, landed, 1, MPI_INT, m->comm);
+
+    cudaMemcpy(m->self_base, saved, slot_bytes, cudaMemcpyHostToDevice);
+    cudaDeviceSynchronize();
+
+    int bad = 0;
+    for (int p = 0; p < m->size; p++) {
+        if (p == m->rank || landed[p]) continue;
+        bad++;
+        if (m->opened[p]) {   // opened cleanly, delivered nothing: drop it so
+            cudaIpcCloseMemHandle(m->opened[p]);  // nobody can write through it
+            m->opened[p] = nullptr;
+        }
+    }
+    m->reachable = landed;
+    if (bad)
+        LOG("rank %d: %d of %d peers opened but did not deliver; reporting "
+            "them unreachable so the caller falls back to MPI",
+            m->rank, bad, m->size - 1);
+
+    free(saved); free(got); free(seen);
+    cudaFree(d_sentinel);
+}
+
+// ============================================================================
 // INTERCEPTED FUNCTIONS
 // ============================================================================
 
@@ -267,6 +402,7 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     m->opened[rank] = base;
 
     g_wins[*win] = m;
+    verify_peer_delivery(m);
     return rc;
 }
 
@@ -324,6 +460,15 @@ int MPI_Win_shared_query(MPI_Win win, int target,
         if (size)    *size = (MPI_Aint)m->fab_sizes[target];
         if (disp)    *disp = m->disp_unit;
         return MPI_SUCCESS;
+    }
+
+    // Probe verdict, when one was taken, outranks every other signal here: it
+    // is the only one that observed an actual store arriving.
+    if (m->reachable && !m->reachable[target]) {
+        LOG("Rank %d: peer %d opened but did not deliver during the window "
+            "probe; reporting unreachable so the caller falls back to MPI",
+            m->rank, target);
+        return MPI_ERR_OTHER;
     }
 
     if (!m->opened[target]) {
@@ -412,6 +557,7 @@ int MPI_Win_free(MPI_Win* win)
                 cudaIpcCloseMemHandle(m->opened[i]);
         }
         free(m->peer_devs);
+        free(m->reachable);
         if (m->self_base_owned)
             cudaFree(m->self_base);
         free(m->opened);
