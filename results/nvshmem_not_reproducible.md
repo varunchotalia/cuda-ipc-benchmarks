@@ -89,3 +89,63 @@ today's NVSHMEM medians as a result.
 Table VIII's GB200 NVSHMEM numbers come from Jeff's system and are untouched by
 this. Our own WinIPC and MPI numbers are unaffected -- section 1 above, and the
 cross-job agreement in `results/transpose_v3_reproducibility.md`.
+
+---
+
+## 5. Not the toolchain either (job 854688)
+
+The CUDA-version hypothesis was tested and rejected. Same source built two ways
+and interleaved on one node, 6 reps per point, driver 595.71.05:
+
+  A = HPC SDK 25.3 / CUDA 12.8 (what we had been running)
+  B = HPC SDK 25.9 / CUDA 13.0 (matched to the 13.x driver)
+
+| mode | order | published | A median | A max | B median | B max |
+|---|--:|--:|--:|--:|--:|--:|
+| nvsingle | 1024 | 415.1 | 43.6 | 430.6 | 18.4 | 422.0 |
+| nvsingle | 4096 | 1215.6 | 21.5 | 75.0 | 30.5 | 304.8 |
+| nvsingle | 16384 | 1295.0 | 196.0 | 232.9 | 208.8 | 272.7 |
+| nvbuffered | 1024 | 120.0 | 25.8 | 60.6 | 6.0 | 30.5 |
+| nvbuffered | 4096 | 751.5 | 52.6 | 129.2 | 45.9 | 158.8 |
+| nvbuffered | 16384 | 1167.0 | 103.5 | 131.0 | 116.5 | 119.9 |
+
+**Both arms reach 80% of published in 1 of 36 runs.** Medians land at 3-16% of
+published either way. Rebuilding against the driver's CUDA version changes
+nothing, so the 12.8-library-under-13.x-driver mismatch is not the cause,
+however well the installation dates lined up.
+
+Worth noting what still works: at order 1024 both arms occasionally hit the
+published value (A max 430.6, B max 422.0 against 415.1). The fast mode is real
+in both builds. At 4096 and 16384 neither arm comes close -- best of twelve
+runs is 304.8 against 1215.6.
+
+## 6. Recommendation: stop investigating, document it
+
+Three hypotheses have now been tested and rejected:
+
+1. reps 2-3 contaminated by the previous rep's teardown -- rep-1-only is still
+   -89% to -94%
+2. NVSHMEM falling back to InfiniBand -- `P2P list: 0 1 2 3`, IBRC skipped
+3. CUDA toolchain mismatch with the driver -- both arms fail identically
+
+Each round costs about a day of queue latency, the obvious causes are gone, and
+nothing in the logs points anywhere. Further investigation has poor expected
+value against the camera-ready deadline, and this is a local environment problem
+rather than a defect in our work.
+
+Take option 1 from section 4: **keep the August numbers and state the
+reproduction attempt.** Something like:
+
+  "The NVSHMEM comparison uses single runs measured in August 2026. A
+   September re-measurement on the same cluster did not reproduce them:
+   medians reached 8-10% of the recorded values, and at the two larger matrix
+   orders the recorded values were not approached in any of ten runs. The
+   cause was not identified; rebuilding against the installed CUDA version did
+   not change it, and our own WinIPC and GPU-aware MPI measurements in the same
+   jobs remained stable to within 4%. The NVSHMEM comparison should therefore
+   be read as indicative."
+
+That is honest, it costs nothing, and it is what survives a reviewer who tries
+to reproduce. Do not publish the September medians as a result -- they would
+say WinIPC is 10x faster than NVSHMEM, which this cluster's behaviour does not
+support as a claim about the library.
