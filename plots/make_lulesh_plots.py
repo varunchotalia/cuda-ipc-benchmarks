@@ -77,7 +77,7 @@ import csv, os
 
 CSV = os.path.join(os.path.dirname(__file__), "..", "results", "lulesh_results.csv")
 CATEGORY = {  # variant -> plot category
-    "direct": "B", "ipc_rp": "C", "mpiwrap_rp": "C",
+    "direct": "C", "ipc_rp": "B", "mpiwrap_rp": "B",
     "ipc": "A", "mpiwrap": "A", "nvshmem": "A",
     "gpumpi": "T", "staged": "T", "shmwin": "W",
 }
@@ -128,15 +128,20 @@ missing = set(CATEGORY) - set(DATA)
 if missing:
     raise SystemExit(f"CSV is missing variants: {sorted(missing)}")
 
-MODE_COLOR = {"B": BLUE, "C": GREEN, "A": MAGENTA, "T": YELLOW, "W": GREY}
+# Colour follows the MECHANISM, not the letter: pack+copy magenta,
+# remote-pack green, direct field writes blue. The 2026-09-17 relabel
+# moved the letters across these, so a reader comparing against an older
+# printout sees the same colour on the same mechanism.
+MODE_COLOR = {"A": MAGENTA, "B": GREEN, "C": BLUE, "T": YELLOW, "W": GREY}
 MODE_LABEL = {
-    "B": "mode B - direct field writes",
-    "C": "mode C - remote-pack",
     "A": "mode A - pack + copy",
+    "B": "mode B - remote-pack",
+    "C": "mode C - direct field writes",
     "T": "two-sided MPI",
     "W": "host shared window",
 }
-CAT_ORDER = ["B", "C", "A", "T", "W"]
+# A, B, C in mechanism order rather than the old performance order.
+CAT_ORDER = ["A", "B", "C", "T", "W"]
 
 # ---- optional variance data from E1 (jobs 60796-60800) --------------------
 VAR_CSV = os.path.join(os.path.dirname(__file__), "..", "results",
