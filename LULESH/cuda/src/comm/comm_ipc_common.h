@@ -175,7 +175,7 @@ static inline int commRecvBegin(Domain& domain, int msgType,
 /* send side */
 
 #ifdef IPC_REMOTE_PACK
-// Mode C: for IPC peers the pack kernels themselves write into the peer's
+// Mode B: for IPC peers the pack kernels themselves write into the peer's
 // packed recv buffer, so the "put" is done when packing finishes; the
 // ready-wait must precede the pack-kernel ENQUEUE.  MPI-fallback peers
 // pack locally (mode-A style) and get a real Isend in COMM_SEND_MSG.

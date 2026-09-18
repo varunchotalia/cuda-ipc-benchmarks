@@ -239,26 +239,31 @@ TRANSPOSE_GBS = {
 # not the same numbers -- direct was 1.80 here against 1.832 in the paper. One
 # of those had to go, and the paper's is the published one.
 #
-# Colours are by MECHANISM MODE, matching make_lulesh_plots.py: mode B direct
-# field writes, mode C remote-pack, mode A pack+copy, two-sided MPI, host
-# shared window. That grouping is what makes the handwritten/interposed pairs
-# read as pairs.
+# Colours are by MECHANISM MODE, matching make_lulesh_plots.py: mode A
+# pack+copy, mode B remote-pack, mode C direct field writes, two-sided MPI,
+# host shared window. That grouping is what makes the handwritten/interposed
+# pairs read as pairs.
+#
+# The letters were reassigned on 2026-09-17 so they run in mechanism order --
+# pack+copy stayed A, remote-pack C->B, direct field writes B->C. Colour
+# follows the mechanism, not the letter, so direct is still blue and
+# remote-pack still green against any older printout.
 BLUE_P, GREEN_P, MAGENTA_P, YELLOW_P = "#2a78d6", "#008300", "#e87ba4", "#eda100"
 LULESH_CATEGORY = {
-    "direct": "B", "ipc_rp": "C", "mpiwrap_rp": "C",
+    "direct": "C", "ipc_rp": "B", "mpiwrap_rp": "B",
     "ipc": "A", "mpiwrap": "A", "nvshmem": "A",
     "gpumpi": "T", "staged": "T", "shmwin": "W",
 }
-LULESH_MODE_COLOR = {"B": BLUE_P, "C": GREEN_P, "A": MAGENTA_P,
+LULESH_MODE_COLOR = {"A": MAGENTA_P, "B": GREEN_P, "C": BLUE_P,
                      "T": YELLOW_P, "W": STAGED}
 LULESH_MODE_LABEL = {
-    "B": "mode B - direct field writes",
-    "C": "mode C - remote-pack",
     "A": "mode A - pack + copy",
+    "B": "mode B - remote-pack",
+    "C": "mode C - direct field writes",
     "T": "two-sided MPI",
     "W": "host shared window",
 }
-LULESH_MODE_ORDER = ["B", "C", "A", "T", "W"]
+LULESH_MODE_ORDER = ["A", "B", "C", "T", "W"]
 # Same display rename the paper figure applies: the CSV keys stay `mpiwrap*`
 # because the build identifiers and queued job scripts still use them.
 LULESH_DISPLAY = {"mpiwrap": "winipc", "mpiwrap_rp": "winipc_rp"}

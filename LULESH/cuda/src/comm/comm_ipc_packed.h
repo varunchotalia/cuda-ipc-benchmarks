@@ -1,7 +1,7 @@
 // comm_ipc_packed.h -- handwritten CUDA-IPC allocation and teardown for the
 // packed recv buffer.  Split out of comm_ipc_common.h so that it is included
 // ONLY by the backends that actually perform their own handle exchange:
-// comm_ipc.h (Mode A/C) and comm_direct.h (Mode B, for the MonoQ path).
+// comm_ipc.h (Mode A/B) and comm_direct.h (Mode C, for the MonoQ path).
 //
 // WHY THE SPLIT EXISTS -- do not merge this back.
 // WinIPC (comm_mpiwrap.h) establishes the same d_peerRecv[] mapping through

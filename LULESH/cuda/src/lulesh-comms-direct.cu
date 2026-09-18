@@ -1,4 +1,4 @@
-// lulesh-comms-direct.cu -- Mode B ("direct") halo exchange.
+// lulesh-comms-direct.cu -- Mode C ("direct") halo exchange.
 //
 // Replaces lulesh-comms-gpu.cu in the COMM_DIRECT build.  There is no pack
 // and no unpack: for each halo message the sender launches one kernel that

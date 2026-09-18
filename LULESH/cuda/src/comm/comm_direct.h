@@ -1,4 +1,4 @@
-// comm_direct.h -- Mode B: no pack, no unpack.
+// comm_direct.h -- Mode C: no pack, no unpack.
 // Sender kernels write halo contributions straight into the RECEIVER's
 // field arrays through CUDA-IPC mappings of the peer fields: atomicAdd for
 // the force-summation phase (multiple neighbors legitimately contribute to
@@ -12,10 +12,10 @@
 #define LULESH_COMM_DIRECT_H
 
 #include "comm_ipc_common.h"
-// Mode B still uses the handwritten packed path for MonoQ; see comm_ipc_packed.h
+// Mode C still uses the handwritten packed path for MonoQ; see comm_ipc_packed.h
 #include "comm_ipc_packed.h"
 
-// Mode B keeps global-barrier synchronization: senders write into the
+// Mode C keeps global-barrier synchronization: senders write into the
 // receiver's FIELD arrays, whose readiness is bounded by the receiver's
 // local compute, not by its unpack -- the per-neighbor token protocol of
 // the packed modes does not cover that dependency.  Single node only, so

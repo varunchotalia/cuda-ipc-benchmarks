@@ -42,7 +42,7 @@ in-neighbor; senders wait for that before putting and send a "delivered"
 token (tag `msgType`) after their stream sync. Cost is O(neighbors) per
 phase and scales with node count, where a barrier costs O(all ranks).
 shmwin and nvshmem keep barrier epochs (node-bounded and NVSHMEM-native
-respectively), as does direct — mode B's field-readiness dependency is
+respectively), as does direct — mode C's field-readiness dependency is
 global, not per-neighbor.
 
 **Hybrid transport**: `d_peerRecv[r] == NULL` is a valid state meaning
@@ -90,7 +90,7 @@ any hardware tested so far, since every peer has been reachable.
 | C — remote-pack | `lulesh_ipc_rp`, `lulesh_mpiwrap_rp` | `+ IPC_REMOTE_PACK` | pack kernel writes **directly into the peer's packed recv buffer** (no local staging, no separate copy); receiver unpack unchanged |
 | B — direct | `lulesh_direct` | `COMM_IPC COMM_DIRECT` | **no pack, no unpack**: one fused kernel per message reads the sender's strided boundary values and writes them into the receiver's field arrays at the mirrored halo positions |
 
-Mode B details:
+Mode C details:
 - **Framing:** `lulesh_direct` has **no WinIPC counterpart**, so it is
   evidence for the *peer-write capability ceiling* — what a general peer
   pointer lets a kernel do that point-to-point MPI cannot express — and
@@ -187,7 +187,7 @@ decimals, so it cannot resolve these gaps):
 | A — pack + copy   | `ipc` 1.59228 s | `winipc` 1.59721 s | **+0.310%** |
 | C — remote-pack   | `ipc_rp` 1.36079 s | `winipc_rp` 1.36011 s | **−0.050%** |
 
-Note mode C's interposed variant is marginally *faster*, which is why
+Note mode B's interposed variant is marginally *faster*, which is why
 these should be described as agreeing within 0.4% rather than as
 identical: the residual is run-to-run noise, not a measured cost.
 
@@ -423,17 +423,17 @@ LULESH/
 │       ├── lulesh.h               # Domain (incl. per-backend comm state); includes comm/comm_backend.h
 │       ├── lulesh-comms.cu        # host-side CommRecv/CommSend/CommSBN (init exchange), backend-agnostic
 │       ├── lulesh-comms-gpu.cu    # GPU pack/unpack for all packed-buffer backends, backend-agnostic
-│       ├── lulesh-comms-direct.cu # Mode B: fused remote-write kernels (replaces lulesh-comms-gpu.cu)
+│       ├── lulesh-comms-direct.cu # Mode C: fused remote-write kernels (replaces lulesh-comms-gpu.cu)
 │       ├── comm/
 │       │   ├── comm_backend.h     # compile-time dispatch, shmRecvOffset(), host-send hook defaults
 │       │   ├── comm_staged.h      # baseline two-sided MPI with host staging
 │       │   ├── comm_gpumpi.h      # CUDA-aware MPI (device pointers)
 │       │   ├── comm_shmwin.h      # MPI shared-memory window + Win_sync barriers
 │       │   ├── comm_ipc_common.h  # packed-buffer mapping + transfer macros shared by the
-│       │   │                      #   IPC family; modes A and C live here
+│       │   │                      #   IPC family; modes A and B live here
 │       │   ├── comm_ipc.h         # explicit cudaIpc handle exchange
 │       │   ├── comm_mpiwrap.h     # MPI_Win_create + shared_query, backed by libmpiwrap.so
-│       │   ├── comm_direct.h      # Mode B setup: peer field mappings (+ packed buffer for MonoQ)
+│       │   ├── comm_direct.h      # Mode C setup: peer field mappings (+ packed buffer for MonoQ)
 │       │   └── comm_nvshmem.h     # NVSHMEM symmetric heap + putmem_on_stream
 │       ├── Makefile               # targets: staged gpumpi shmwin ipc mpiwrap nvshmem
 │       │                          #          ipc_rp mpiwrap_rp direct   (make all builds all 9)
