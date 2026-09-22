@@ -260,7 +260,7 @@ save(fig, "plots/lulesh_variants_sxm.pdf")
 
 # =============== chart 2: the three send modes, ipc vs WinIPC ===============
 fig, ax = plt.subplots(figsize=(COL_W, 2.45))
-modes      = ["A\npack + copy", "C\nremote-pack", "B\ndirect writes"]
+modes      = ["A\npack + copy", "B\nremote-pack", "C\ndirect writes"]
 IPC_V  = ["ipc", "ipc_rp", "direct"]
 WIN_V = ["mpiwrap", "mpiwrap_rp", None]
 
