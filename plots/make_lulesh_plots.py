@@ -312,7 +312,7 @@ for bar, t in zip(b1, ipc_times):
 for bar, t in zip(b2, wrap_times):
     ax.text(bar.get_x() + bar.get_width()/2, t + 0.05, f"{t:.3f}",
             ha="center", fontsize=5.5, color=INK)
-# Mode B has no interposed counterpart (Section IV-F: Thrust owns the field
+# Mode C has no interposed counterpart (Section IV-F: Thrust owns the field
 # allocations, and a window must own its storage to be exportable). Draw the
 # absent bar as a dashed outline and label it, rather than leaving a floating
 # caption in white space -- otherwise the single bar reads as lost data.
