@@ -1,5 +1,7 @@
 # Distributed transpose — job 63328, complete sweep in a single job
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. Superseded. The final paper regenerated the transpose table (now Table III) from job 90161, not from this job. "Table V" below is its draft number.
+
 Raw log `transpose_fig_v2_63328.out` is gitignored (`*.out`); this is the
 committed record.
 

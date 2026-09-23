@@ -1,5 +1,7 @@
 # Table V regenerated from a single job
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. Applied. The final paper's Table III and Fig. 3 come from job 90161 and state 2.44×. "Table V" below is that table's draft number.
+
 Proposal, not applied. Table V currently stitches job 28917 (2026-05-05) for
 its IPC/MPI columns to job 61541 (2026-08-07) for NVSHMEM -- three months
 apart, across the `UCX_TLS` re-baseline in `05d0e2b`. Job 90161 measured

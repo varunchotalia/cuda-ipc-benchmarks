@@ -1,5 +1,7 @@
 # Table I: which source snapshot produced each number
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. The recommendation below (277 effective lines, not 358) is applied in the final Table I. In the revision table, transpose "Table V" is now Table III and comes from job 90161, "Table VI" is now Table IV, and the Fig. 3c NVSHMEM panel was dropped.
+
 Table I counts **source lines and call sites**, so its provenance is a tree
 snapshot, not a job date. Every number in it reproduces at commit `3df6bf2`
 (2026-08-05, "Correct shared_query's reported size and disp_unit; route

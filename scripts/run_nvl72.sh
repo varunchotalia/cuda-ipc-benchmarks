@@ -119,8 +119,8 @@ fi
 RANKS_LIST=${RANKS_LIST:-8 27 64}        # LULESH needs cubic rank counts
 TRANSPOSE_RANKS_LIST=${TRANSPOSE_RANKS_LIST:-8 16 32 64}
 # 16 and 32 are NOT optional here. The stencil result this rerun exists to fix
-# -- the GPU-aware MPI stencil column, measured at
-# warmup 0 -- was taken at those two rank counts and nowhere else. A sweep of
+# -- the GPU-aware MPI stencil column, measured at warmup 0 -- was taken at
+# those two rank counts and nowhere else. A sweep of
 # 8 and 64 alone produces new numbers that cannot replace them, so the open
 # question (fixed cross-node wireup, or a genuinely slow inter-node device
 # path?) would stay open. 8 and 64 are kept as the low and high anchors.
@@ -161,8 +161,8 @@ NVSHMEM_ENV="env NVSHMEM_BOOTSTRAP=$NVSHMEM_BOOTSTRAP NVSHMEM_SYMMETRIC_SIZE=$NV
 # buffers so it has no CUDA-aware connection to establish. Job 57012 on nvwulf
 # measured the resulting artifact at ~265 ms, independent of grid size:
 # GPU-aware 1024^2 went 272 ms (warmup=0) -> 128 (warmup=1) -> 4.88 (warmup=5),
-# while IPC and staged moved <1%. The first GB200 run of this suite used warmup=0
-# and reproduced it (RESULTS_NVL16_NVL32.md section 3). 20 is well past the
+# while IPC and staged moved <1%. The first GB200 run of this suite used
+# warmup=0 and showed the same signature. 20 is well past the
 # convergence knee measured in results/stencil_results.txt.
 #
 # Passed as an `env` prefix on each launch rather than exported: srun forwards

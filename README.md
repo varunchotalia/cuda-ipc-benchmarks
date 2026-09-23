@@ -1,6 +1,22 @@
 # CUDA IPC vs MPI — Multi-GPU Communication Benchmarks
 
-Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVIDIA H200 GPUs (NVLink).
+Code and data for the paper *MPI Windows as an Abstraction for CUDA
+Interprocess Communication* (Chotalia, Schuchart, Hammond). WinIPC, an MPI
+profiling-interface library, gives applications CUDA IPC peer pointers through
+`MPI_Win_allocate` / `MPI_Win_shared_query` / `MPI_Win_free`. The repository
+also holds the three case studies (distributed transpose, five-point stencil,
+CUDA LULESH) and the comparison baselines (GPU-aware MPI, host-staged MPI,
+NVSHMEM, a host shared window).
+
+### Paper figures and their sources
+
+| Paper | File | Generator | Data |
+|---|---|---|---|
+| Fig. 3, Table III | `plots/transpose_ipc_accum.pdf`, `plots/transpose_ipc_noaccum.pdf` | `plots/make_transpose_plots.py` | `results/transpose_90161.csv` |
+| Fig. 4, Table IV | `plots/stencil_speedup.pdf` | `plots/make_stencil_plots.py` | `results/stencil_results.txt` |
+| Fig. 5 | `plots/lulesh_variants_sxm.pdf` | `plots/make_lulesh_plots.py` | `results/lulesh_variance.csv` |
+| Table I | — | `scripts/count_mechanism_lines.sh`, `scripts/check_no_ipc_calls.sh` | `results/table1_provenance.md` |
+| Fig. 6, Table V | `plots/gb200_transpose.pdf`, `plots/gb200_stencil.pdf` | not public | collaborator runs on a GB200 system; the per-run records are not public |
 
 > **Naming.** The MPI-window interposer and its halo-exchange backend are now
 > called **WinIPC**; they were previously called *mpiwrap*. The rename is
@@ -40,15 +56,17 @@ Benchmarking CUDA IPC against MPI and NVSHMEM for multi-GPU communication on NVI
 │   ├── bench_ipc.cu                    #   raw IPC-window bandwidth/latency/atomics microbenchmark
 │   └── bench_kernels.cu                #   GPU kernels used by bench_ipc.cu
 │
-├── plots/                          # Benchmark visualizations
-│   ├── transpose_benchmark_ipc_nvshmem.png
-│   ├── transpose_stencil_comparison.png
-│   ├── lulesh_variants_sxm.png        # LULESH: all defensible variants
-│   └── lulesh_modes_sxm.png           # LULESH: send modes, ipc vs WinIPC
+├── plots/                          # Paper figures (PDF) and their generators
+│   ├── make_transpose_plots.py        #   Fig. 3
+│   ├── make_stencil_plots.py          #   Fig. 4
+│   ├── make_lulesh_plots.py           #   Fig. 5
+│   └── gb200_*.pdf                    #   Fig. 6
 │
-├── results/                        # Tabulated benchmark data
-│   ├── transpose_results.md
-│   └── stencil_results.txt
+├── results/                        # Committed records behind the paper (raw *.out logs are not tracked)
+│   ├── transpose_90161.csv            #   every transpose run behind Fig. 3 / Table III
+│   ├── stencil_results.txt            #   Table IV / Fig. 4
+│   ├── lulesh_variance.csv            #   Fig. 5
+│   └── *.md                           #   investigation notes; each says what it supports
 │
 ├── scripts/
 │   ├── run_transpose_all.sbatch       # Builds and runs all IPC/MPI transpose variants
@@ -95,13 +113,33 @@ results, file map, and build instructions.
 
 ## Key Findings
 
-**IPC direct single-kernel** wins at small–medium matrices (up to 4096²) by eliminating P−1 barriers and overlapping all peer transfers in a single kernel launch.
+These are the paper's results. Transpose rates follow the paper's Eq. 1,
+2N²·sizeof(double)/t, which is an application-rate convention, not measured
+link bandwidth.
 
-**Buffered IPC ≈ GPU-aware MPI** at large matrices (~1060–1077 GB/s at 16384²). Both saturate NVLink bandwidth via bulk DMA transfers.
+**Transpose, 4× H200 in one NVLink domain** (job 90161; median of 3 runs, each
+100 timed iterations after 20 untimed). With accumulation at 1024², the
+single-kernel direct variant reaches 563.8 GB/s against 231.1 GB/s for
+GPU-aware MPI (2.44×), and 1.9× at 2048². The lead is gone by 4096² (878.1 vs
+883.1). At 16384², buffered WinIPC and GPU-aware MPI are within 1.5% (1064.1
+vs 1080.3 GB/s). Host-staged MPI stays at 66–103 GB/s.
 
-**NVSHMEM direct** is 3–4× slower than IPC direct at small sizes due to per-element `nvshmem_double_p/g` protocol overhead, but converges with IPC at large sizes. NVSHMEM single-kernel is 2× faster than NVSHMEM per-phase at small sizes for the same reason as IPC.
+**Stencil, 4× H200.** WinIPC takes 3.95 ms against 4.71 ms for GPU-aware MPI
+and 7.80 ms for host-staged MPI at 1024² (100 timed iterations). The gap
+closes with grid size: 143.04 vs 143.73 ms at 32768².
 
-**Staged MPI** flatlines at ~100–120 GB/s (PCIe bottleneck from D2H/H2D transfers).
+**LULESH, 8× H200 SXM, `-s 45`.** Matched WinIPC and handwritten CUDA IPC
+backends differ by at most 0.46% across 5 runs, with the sign changing, so
+pointer acquisition through the window has no measurable steady-state cost.
+Direct field writes (mode C) reach 1.832 Gzones/s, 55.7% above host-staged
+MPI. GPU-aware MPI is +6.5% and NVSHMEM +11.7% over host-staged MPI.
+
+**GB200 multi-node NVLink, 16 and 32 GPUs.** The per-phase direct WinIPC
+transpose is 1.72× and 1.70× GPU-aware MPI at order 6912. These are single
+runs from separate jobs; the paper gives the details and caveats.
+
+**Not reported.** The intra-node NVSHMEM transpose comparison does not
+reproduce on this cluster; see `results/nvshmem_not_reproducible.md`.
 
 ## Hardware
 
@@ -136,9 +174,13 @@ export NVSHMEM_HOME=/path/to/nvshmem        # optional: enables nvshmem targets
 cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100
 cmake --build build -j
 
-# scheduler-agnostic runner: transpose + stencil + LULESH at 8/27/64 ranks,
-# with LD_PRELOAD and energy cross-checks handled for you
-LAUNCH="srun --mpi=pmix -n" bash scripts/run_nvl72.sh    # or LAUNCH="mpirun -np"
+# scheduler-agnostic runner: transpose + stencil + LULESH, with LD_PRELOAD
+# and energy cross-checks handled for you. Inside a Slurm allocation it picks
+# `srun --mpi=pmix --ntasks-per-node=$GPUS_PER_NODE -n` itself. If you set
+# LAUNCH by hand, keep --ntasks-per-node, or ranks will not land one per GPU.
+bash scripts/run_nvl72.sh
+# With an HPC-X toolchain, `source scripts/env_gb200.sh` first (it needs
+# CUDA_HOME, HPCX_HOME and NVSHMEM_HOME set), in the same shell as the build.
 ```
 
 On a multi-node NVLink system the interposer logs `fabric window: N ranks
@@ -173,7 +215,7 @@ make all                          # builds: direct, direct_single, buffered, gpu
                                   #         + _noaccum variants
 
 # Run with LD_PRELOAD for IPC modes (COMM_MODE=0 and 1)
-MPIWRAP=~/mpiwrap/libmpiwrap.so
+MPIWRAP=$(realpath ../libmpiwrap.so)   # built in the step above, at the repo root
 LD_PRELOAD=$MPIWRAP mpirun -np 4 ./direct 100 4096
 LD_PRELOAD=$MPIWRAP mpirun -np 4 ./direct_single 100 4096
 LD_PRELOAD=$MPIWRAP mpirun -np 4 ./buffered 100 4096
@@ -182,8 +224,10 @@ LD_PRELOAD=$MPIWRAP mpirun -np 4 ./buffered 100 4096
 mpirun -np 4 ./gpumpi 100 4096
 mpirun -np 4 ./staged 100 4096
 
-# Or submit everything via sbatch (handles LD_PRELOAD automatically)
-sbatch ~/mpiwrap/scripts/run_transpose_all.sbatch
+# Or submit everything via sbatch (handles LD_PRELOAD automatically).
+# The sbatch scripts assume the repository is checked out at ~/mpiwrap;
+# edit their `cd` lines if yours is elsewhere.
+sbatch scripts/run_transpose_all.sbatch
 ```
 
 ### Transpose (NVSHMEM modes)
@@ -199,8 +243,8 @@ mpirun -np 4 ./nvshmem_direct 100 4096
 mpirun -np 4 ./nvshmem_direct_single 100 4096
 mpirun -np 4 ./nvshmem_buffered 100 4096
 
-# Or via sbatch
-sbatch ~/mpiwrap/scripts/run_nvshmem_all.sbatch
+# Or via sbatch (same ~/mpiwrap assumption as above)
+sbatch scripts/run_nvshmem_all.sbatch
 ```
 
 ### Stencil
@@ -214,7 +258,7 @@ MPI_HOME=$(dirname $(dirname $(which mpicc)))
 nvcc -O3 -gencode arch=compute_90,code=sm_90 \
     -I${MPI_HOME}/include stencil_ipc.cu \
     -o stencil_ipc -L${MPI_HOME}/lib -lmpi
-MPIWRAP=~/mpiwrap/libmpiwrap.so
+MPIWRAP=$(realpath ../libmpiwrap.so)
 LD_PRELOAD=$MPIWRAP mpirun -np 4 ./stencil_ipc
 
 # Staged MPI version (D2H/H2D)

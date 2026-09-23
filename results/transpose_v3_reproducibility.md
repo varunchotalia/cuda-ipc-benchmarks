@@ -1,5 +1,7 @@
 # Transpose sweep, job 90161: what reproduces and what does not
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. This job supplies the final paper's Fig. 3 and Table III (`results/transpose_90161.csv`). "Section V-I" below refers to a draft.
+
 Raw log `transpose_fig_v3_90161.out` is gitignored; this is the committed
 record. Figure: `plots/transpose_v3_sweep.pdf`.
 

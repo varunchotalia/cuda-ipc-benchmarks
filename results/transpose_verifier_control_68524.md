@@ -1,5 +1,7 @@
 # Does the transpose verifier inspect remotely delivered data? Yes.
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. The final paper's headline is 2.44× from job 90161, not 3.0×, and "Table V" below is now Table III. The finding, that the verifier checks remotely delivered data, is unchanged.
+
 Settles NVL_SUMMARY 6.Q4 ("the single-kernel transpose variant reports
 validation success on work it does not appear to perform") for the
 validation half. Raw log `transpose_val_ctrl_68524.out` is gitignored.

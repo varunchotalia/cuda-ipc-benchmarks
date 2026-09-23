@@ -1,5 +1,7 @@
 # Transpose Benchmark — H200 GPUs, 100 iterations
 
+> **Status (2026-09-23).** Written against an earlier draft of the paper; its table, figure and section numbers differ from the final version. The job 28917 data here produced the draft Fig. 3 and transpose table. The final paper uses job 90161 instead (`results/transpose_90161.csv`).
+
 > **READ FIRST (added 2026-08-01, jobs 59067 + 59070).** The IPC/MPI tables
 > below (measured 2026-05-05 under UCX *default* transport selection) appear to
 > be CORRECT. Do not "fix" them. Two later-discovered effects can make them look

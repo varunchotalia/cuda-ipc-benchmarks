@@ -1,19 +1,26 @@
 #!/bin/bash
-# GB200 NVL72 toolchain -- source before BOTH
-# the cmake build and scripts/run_nvl72.sh, in the same shell:
+# Toolchain setup for a GB200 multi-node NVLink system with an HPC-X Open MPI
+# and a prebuilt NVSHMEM. Source it before BOTH the cmake build and
+# scripts/run_nvl72.sh, in the same shell:
 #
+#   export CUDA_HOME=/path/to/cuda-13.x
+#   export HPCX_HOME=/path/to/hpcx-v2.22.1-...-aarch64
+#   export NVSHMEM_HOME=/path/to/nvshmem
 #   source scripts/env_gb200.sh
 #   srun ... cmake -B build -DCMAKE_CUDA_ARCHITECTURES=100 && cmake --build build -j
 #   LAUNCH="srun --mpi=pmix --ntasks-per-node=4 -n" bash scripts/run_nvl72.sh
 #
-# WHY THIS FILE EXISTS. One run built against HPC-X 2.22.1 (what cmake
-# found on PATH) and ran against HPC-X 2.21 (what the job script put on
+# The three paths are site-specific, so there are no defaults: the script
+# stops if any of them is unset or missing.
+#
+# WHY THIS FILE EXISTS. One run built against HPC-X 2.22.1 (what cmake found
+# on PATH) and ran against HPC-X 2.21 (what the job script put on
 # LD_LIBRARY_PATH). Every rank died in MPI_Init with
 #   mca_pml_base_open() failed / Framework: pml Component: ucx not found
 # and the whole suite reported n/a. Nothing was wrong with the benchmarks.
 # Everything below derives from HPCX_HOME so the two halves cannot drift.
 #
-# 2.22.1, not 2.21, is also deliberate: 2.21's UCX kills gpumpi/ipc/ipc_rp/
+# 2.22.1, not 2.21, is also deliberate: 2.21's UCX killed gpumpi/ipc/ipc_rp/
 # nvshmem at 27 and 64 ranks with
 #   cuda_ipc_cache.c:549 Fatal: failed to open ipc mem handle ...
 #     (Element already exists)
@@ -23,9 +30,9 @@
 # ranks survived and 27/64 did not. If 2.22.1 still hits it, see
 # UCX_CUDA_IPC_CACHE below.
 
-CUDA_HOME=${CUDA_HOME:-/path/to/cuda-13.0}
-HPCX_HOME=${HPCX_HOME:-/path/to/hpcx-v2.22.1-gcc-inbox-ubuntu24.04-cuda12-aarch64}
-NVSHMEM_HOME=${NVSHMEM_HOME:-/path/to/nvshmem}
+for v in CUDA_HOME HPCX_HOME NVSHMEM_HOME; do
+    [ -n "${!v:-}" ] || { echo "env_gb200.sh: set $v first" >&2; return 1 2>/dev/null || exit 1; }
+done
 
 for d in "$CUDA_HOME" "$HPCX_HOME" "$NVSHMEM_HOME"; do
     [ -d "$d" ] || { echo "env_gb200.sh: no such directory: $d" >&2; return 1 2>/dev/null || exit 1; }

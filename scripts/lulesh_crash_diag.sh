@@ -46,8 +46,8 @@ MPIWRAP_LIB=$PWD/$BUILD/libmpiwrap.so
 mkdir -p "$OUTDIR"
 
 if [ -z "${LAUNCH:-}" ]; then
-    # srun needs --ntasks-per-node so srun pins one rank per GPU; srun
-    # derives the node count from -n.  See scripts/run_nvl72.sh.
+    # --ntasks-per-node makes srun pin one rank per GPU; srun derives the
+    # node count from -n.  scripts/run_nvl72.sh uses the same launcher.
     LAUNCH=${LAUNCH:-"srun --mpi=pmix --ntasks-per-node=4 -n"}
 fi
 echo "launcher: '$LAUNCH'   build: $BUILD   size: -s $SIZE   ranks: $RANKS"
