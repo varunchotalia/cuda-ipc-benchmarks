@@ -18,6 +18,9 @@ NVSHMEM, a host shared window).
 | Table I | — | `scripts/count_mechanism_lines.sh`, `scripts/check_no_ipc_calls.sh` | `results/table1_provenance.md` |
 | Fig. 6, Table V | `plots/gb200_transpose.pdf`, `plots/gb200_stencil.pdf` | not public | collaborator runs on a GB200 system; the per-run records are not public |
 
+Commit hashes from before 2026-09-23 that no longer resolve are listed in
+`results/commit_hash_map_2026-09-23.md`.
+
 > **Naming.** The MPI-window interposer and its halo-exchange backend are now
 > called **WinIPC**; they were previously called *mpiwrap*. The rename is
 > complete in prose, figures and comments. It is **not** yet applied to
