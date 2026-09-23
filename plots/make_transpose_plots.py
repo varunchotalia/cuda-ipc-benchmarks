@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
-"""Transpose figures for the paper. Writes three single-column PDFs:
+"""Transpose figures for the paper (Fig. 3). Writes two single-column PDFs:
 
     plots/transpose_ipc_accum.pdf      IPC -- With Accumulation (B += A^T)
     plots/transpose_ipc_noaccum.pdf    IPC -- No Accumulation  (B = A^T)
-    plots/transpose_ipc_vs_nvshmem.pdf IPC vs NVSHMEM -- No Accumulation
-
-Three panels of the previous six-panel composite are deliberately NOT emitted:
-"IPC -- Accum vs No-Accum", "NVSHMEM -- With Accumulation" and
-"NVSHMEM -- No Accumulation". Their content is either restated by the two IPC
-panels or subsumed by the IPC-vs-NVSHMEM comparison.
 
 One file per panel, rather than a composite, so the LaTeX side can place them
-one-per-column or three-across without regenerating anything.
+one-per-column without regenerating anything.
 
-PROVENANCE. This generator did not exist before 2026-08-04: the previous
-figure, plots/transpose_benchmark_ipc_nvshmem.png, was committed as a finished
-image with no script, so it could not be regenerated and its numbers could not
-be checked against the results file. Everything here is parsed from
-results/transpose_results.md, which is therefore the single source of truth --
-update that file and rerun, do not edit figures by hand.
+DATA: job 90161, h200x4-04, 2026-09-09. Four H200 GPUs in one peer-accessible
+domain, 100 timed iterations after 20 untimed, UCX defaults (UCX_TLS unset),
+three reps per point; each point is the MEDIAN of the three reps. Read from
+results/transpose_90161.csv, which scripts/build_transpose_90161_csv.py builds
+from the (gitignored) raw log and which refuses to build if the log header
+disagrees with those settings or any run failed validation. Update that CSV and
+rerun; do not edit figures by hand.
 
-Data: 2026-05-05, four H200 GPUs in one peer-accessible domain, mean of 100
-timed iterations after one untimed, UCX defaults (UCX_TLS deliberately unset --
-see the appendix in the results file for why pinning it is harmful).
+Until 2026-09-22 these panels came from results/transpose_results.md (job
+28917, 2026-05-05, one run per point, one untimed iteration). That source is
+superseded for Fig. 3 and Table III.
+
+The IPC-vs-NVSHMEM panel this script used to write is no longer generated: the
+paper dropped the intra-node NVSHMEM comparison because it does not reproduce
+(results/nvshmem_not_reproducible.md). plots/transpose_ipc_vs_nvshmem.pdf is a
+leftover from the May/August data and is not a paper figure.
 """
+import csv
 import os
-import re
+import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,97 +36,52 @@ import matplotlib.pyplot as plt  # noqa: E402
 use_paper_style()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "..", "results", "transpose_results.md")
+SRC = os.path.join(HERE, "..", "results", "transpose_90161.csv")
 OUT = HERE
 
-# ---------------------------------------------------------------------------
-# Parse results/transpose_results.md
-#
-# Only the "## 4 GPUs" sections are read; the 2-GPU section is a separate
-# experiment and must not be mixed in. A cell may hold a non-numeric placeholder
-# such as "(rerun pending)", which becomes None and is skipped when plotting
-# rather than being silently treated as zero.
-# ---------------------------------------------------------------------------
-ROW = re.compile(r"^\s*(\d+²)\s*\|\s*([^|]+?)\s*\|\s*(.+?)\s*$")
-
-
-def parse(path=SRC):
-    data = {"accum": {}, "noaccum": {}}
-    sizes = []
-    bucket = None
-    with open(path) as f:
-        for line in f:
-            if line.startswith("## "):
-                if "4 GPUs" not in line:
-                    bucket = None                    # e.g. the 2-GPU section
-                elif "Without Accumulation" in line:
-                    bucket = "noaccum"
-                elif "With Accumulation" in line:
-                    bucket = "accum"
-                else:
-                    bucket = None
-                continue
-            if bucket is None or "|" not in line or line.startswith("---"):
-                continue
-            m = ROW.match(line)
-            if not m:
-                continue
-            size, mode, raw = m.group(1), m.group(2), m.group(3)
-            if mode.lower().startswith("mode"):       # header row
-                continue
-            try:
-                val = float(raw)
-            except ValueError:
-                val = None                            # "(rerun pending)" etc.
-            data[bucket].setdefault(mode, {})[size] = val
-            if size not in sizes:
-                sizes.append(size)
-    return data, sizes
-
-
-DATA, SIZES = parse()
-if not DATA["accum"] or not DATA["noaccum"]:
-    raise SystemExit(f"parsed no 4-GPU data from {SRC}")
-
-# The composite figure plotted 1024^2..16384^2; keep that range.
-SIZES = [s for s in SIZES if s in
-         {"1024²", "2048²", "4096²", "8192²", "16384²"}]
+# The published figure plots 1024^2..16384^2; keep that range and format. Job
+# 90161 also has non-power-of-two orders and orders up to 65536; those are in
+# plots/transpose_v3_sweep.pdf, not here.
+ORDERS = [1024, 2048, 4096, 8192, 16384]
+SIZES = [f"{o}\u00b2" for o in ORDERS]
 X = range(len(SIZES))
+BUCKET = {"accum": "1", "noaccum": "0"}
+
+
+def load(path=SRC):
+    reps = {}
+    with open(path) as fh:
+        for r in csv.DictReader(fh):
+            if (r["warmup"], r["iters"]) != ("20", "100"):
+                raise SystemExit(f"{path}: row with warmup={r['warmup']} "
+                                 f"iters={r['iters']}")
+            key = (r["accum"], r["mode"], int(r["order"]))
+            reps.setdefault(key, []).append(float(r["gbps"]))
+    return {k: statistics.median(v) for k, v in reps.items()}
+
+
+DATA = load()
 
 
 def series(bucket, mode):
-    """(x, y) for one mode, dropping sizes with no measurement."""
-    row = DATA[bucket].get(mode, {})
-    xs, ys = [], []
-    for i, s in enumerate(SIZES):
-        v = row.get(s)
-        if v is not None:
-            xs.append(i)
-            ys.append(v)
-    if not xs:
-        raise SystemExit(f"no data for mode {mode!r} in {bucket}")
-    return xs, ys
+    """(x, y) for one mode; every point must be present."""
+    ys = []
+    for o in ORDERS:
+        key = (BUCKET[bucket], mode, o)
+        if key not in DATA:
+            raise SystemExit(f"no data for {key} in {SRC}")
+        ys.append(DATA[key])
+    return list(X), ys
 
 
 # style: (source mode name, legend label, colour, marker, linestyle)
 IPC_SERIES = [
-    ("IPC direct (single-K)",  "IPC direct (single-kernel)", "#2ca02c", "o", "-"),
-    ("IPC direct (per-phase)", "IPC direct (per-phase)",     "#1f77b4", "s", "-"),
-    ("IPC buffered",           "IPC buffered",              "#d62728", "^", "--"),
-    ("GPU-aware MPI",          "GPU-aware MPI",          "#9467bd", "D", "-."),
-    ("Staged MPI",             "Staged MPI",             "#8a8a86", "v", ":"),
+    ("single",   "IPC direct (single-kernel)", "#2ca02c", "o", "-"),
+    ("direct",   "IPC direct (per-phase)",     "#1f77b4", "s", "-"),
+    ("buffered", "IPC buffered",               "#d62728", "^", "--"),
+    ("gpumpi",   "GPU-aware MPI",              "#9467bd", "D", "-."),
+    ("staged",   "Staged MPI",                 "#8a8a86", "v", ":"),
 ]
-
-VS_SERIES = [
-    ("IPC direct (single-K)",  "IPC single-kernel", "#2ca02c", "o", "-"),
-    ("IPC direct (per-phase)", "IPC per-phase",     "#1f77b4", "s", "-"),
-    ("IPC buffered",           "IPC buffered",      "#d62728", "^", "-."),
-    ("GPU-aware MPI",          "GPU-aware MPI",     "#9467bd", "D", "-."),
-    ("NVSHMEM direct",         "NVSHMEM direct",    "#ff7f0e", "o", "--"),
-    ("NVSHMEM single-K",       "NVSHMEM single-K",  "#eda100", "D", "--"),
-    ("NVSHMEM buffered",       "NVSHMEM buffered",  "#17a2b8", "^", "--"),
-]
-
 
 def panel(bucket, spec, title, path, ncol=1, legend_only=None):
     """legend_only: if given, only these labels get a legend entry.
@@ -168,7 +124,3 @@ panel("accum", IPC_SERIES, "IPC — With Accumulation (B += A\u1d40)",
       os.path.join(OUT, "transpose_ipc_accum.pdf"))
 panel("noaccum", IPC_SERIES, "IPC — No Accumulation (B = A\u1d40)",
       os.path.join(OUT, "transpose_ipc_noaccum.pdf"))
-# Key every series here so the comparison panel is self-contained; readers do
-# not have to cross-reference the two IPC panels to decode its curves.
-panel("noaccum", VS_SERIES, "IPC vs NVSHMEM — No Accumulation",
-      os.path.join(OUT, "transpose_ipc_vs_nvshmem.pdf"), ncol=1)
