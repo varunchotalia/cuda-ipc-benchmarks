@@ -137,9 +137,10 @@ pointer acquisition through the window has no measurable steady-state cost.
 Direct field writes (mode C) reach 1.832 Gzones/s, 55.7% above host-staged
 MPI. GPU-aware MPI is +6.5% and NVSHMEM +11.7% over host-staged MPI.
 
-**GB200 multi-node NVLink, 16 and 32 GPUs.** The per-phase direct WinIPC
-transpose is 1.72× and 1.70× GPU-aware MPI at order 6912. These are single
-runs from separate jobs; the paper gives the details and caveats.
+**GB200 multi-node NVLink, 16 and 32 GPUs** (one run; 100 timed iterations
+after 20 untimed). The per-phase direct WinIPC transpose is 1.42× and 1.41×
+GPU-aware MPI at order 6912, and single-kernel direct is 8.1× and 19.8×. The
+paper gives the placement and caveats.
 
 **Not reported.** The intra-node NVSHMEM transpose comparison does not
 reproduce on this cluster; see `results/nvshmem_not_reproducible.md`.
