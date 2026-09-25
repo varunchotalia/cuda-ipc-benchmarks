@@ -52,10 +52,11 @@ static void bench_bandwidth(double* src, double* dst, size_t bytes, int iters,
     
     const int SAMPLES = 10;
     std::vector<double> bw_samples;
-    
+    cudaError_t timing_err = cudaSuccess;
+
     for (int s = 0; s < SAMPLES; s++) {
         MPI_Barrier(MPI_COMM_WORLD);
-        
+
         // Everyone launches the kernel
         cudaEventRecord(ev0);
         copy_kernel<<<blocks, threads>>>(src, dst, n, iters);
@@ -63,15 +64,20 @@ static void bench_bandwidth(double* src, double* dst, size_t bytes, int iters,
         cudaEventSynchronize(ev1);
         
         if (rank == 0) {
-            float ms;
-            cudaEventElapsedTime(&ms, ev0, ev1);
+            float ms = 0.0f;
+            cudaError_t err = cudaEventElapsedTime(&ms, ev0, ev1);
+            // Keep looping on failure: every rank must hit the same barriers.
+            if (err != cudaSuccess) { timing_err = err; continue; }
             double secs = ms / 1000.0;
             double bw = (bytes * iters) / secs / 1e9;
             bw_samples.push_back(bw);
         }
     }
     
-    if (rank == 0) {
+    if (rank == 0 && timing_err != cudaSuccess) {
+        fprintf(stderr, "[BW] %8zu bytes, %4d iters: timing failed (%s)\n",
+                bytes, iters, cudaGetErrorString(timing_err));
+    } else if (rank == 0) {
         double m = mean(bw_samples);
         double sd = stddev(bw_samples, m);
         fprintf(stderr, "[BW] %8zu bytes, %4d iters: %.2f ± %.2f GB/s\n",
@@ -177,12 +183,23 @@ int MPIX_CUDA_IPC_bench(MPI_Win win, int iters, size_t max_bytes)
     int peer = (rank + 1) % size;
     MPI_Aint qsize;
     int disp;
-    void *my_base, *peer_base;
-    MPI_Win_shared_query(win, rank, &qsize, &disp, &my_base);
-    MPI_Win_shared_query(win, peer, &qsize, &disp, &peer_base);
-    
-    if (!peer_base) {
-        if (rank == 0) fprintf(stderr, "Failed to get peer pointer\n");
+    void *my_base = nullptr, *peer_base = nullptr;
+    int rc_self = MPI_Win_shared_query(win, rank, &qsize, &disp, &my_base);
+    int rc_peer = MPI_Win_shared_query(win, peer, &qsize, &disp, &peer_base);
+
+    // A failed query leaves the pointer untouched, so the return code is the
+    // only signal. The interposer returns MPI_ERR_OTHER for a peer it cannot
+    // reach -- e.g. ranks on different nodes, where this MPI_Win_create window
+    // takes the legacy (single-node) IPC path. Ignoring that code once let the
+    // copy kernel write through an uninitialized pointer and report ~1e44 GB/s.
+    // Decide collectively, so no rank enters the timed loop's barriers alone.
+    int ok = (rc_self == MPI_SUCCESS && rc_peer == MPI_SUCCESS && peer_base) ? 1 : 0;
+    int all_ok = 0;
+    MPI_Allreduce(&ok, &all_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if (!all_ok) {
+        if (!ok)
+            fprintf(stderr, "Rank %d: peer %d is not reachable through the window "
+                    "(different node?); skipping the benchmark\n", rank, peer);
         return MPI_ERR_OTHER;
     }
     
