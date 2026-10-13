@@ -25,6 +25,7 @@
 #include <mpi.h>
 #include <cuda_runtime_api.h>
 #include <cuda.h>
+#include "mpiw_dev_win.h"
 
 #define LOG(fmt, ...) fprintf(stderr, "[winipc] " fmt "\n", ##__VA_ARGS__)
 
@@ -40,6 +41,8 @@ struct WinMeta {
     cudaIpcMemHandle_t* handles = nullptr;  // IPC handle from each rank
     size_t* peer_sizes = nullptr;           // size of EACH rank, gathered at create
     int* peer_devs = nullptr;               // CUDA device ordinal of EACH rank
+    int* peer_disps = nullptr;              // disp_unit of EACH rank
+    void* dev_handle = nullptr;             // device mpiw_dev_win, if one was made
     void** opened = nullptr;                // cached opened pointers
     int* reachable = nullptr;               // probe verdict, NULL if not probed
     void* self_base = nullptr;              // my own base pointer
@@ -371,13 +374,22 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     PMPI_Allgather(&my_size, sizeof(size_t), MPI_BYTE,
                   peer_sizes, sizeof(size_t), MPI_BYTE, comm);
 
-    // Gather each rank's CUDA device ordinal. shared_query needs it to ask
-    // cudaDeviceCanAccessPeer before trusting an opened handle -- see the long
-    // comment there. One more Allgather at construction, nothing later.
+    // Gather each rank's CUDA device ordinal and disp_unit, in one Allgather.
+    // shared_query needs the device to ask cudaDeviceCanAccessPeer before
+    // trusting an opened handle -- see the long comment there. The device
+    // handle (MPIX_Win_get_device_handle) needs every rank's disp_unit,
+    // because a device Put scales target_disp by the TARGET's unit.
+    int mine[2] = {-1, disp};
+    cudaGetDevice(&mine[0]);
+    auto* both = (int*)malloc(2 * nprocs * sizeof(int));
+    PMPI_Allgather(mine, 2, MPI_INT, both, 2, MPI_INT, comm);
     auto* peer_devs = (int*)malloc(nprocs * sizeof(int));
-    int my_dev = -1;
-    cudaGetDevice(&my_dev);
-    PMPI_Allgather(&my_dev, 1, MPI_INT, peer_devs, 1, MPI_INT, comm);
+    auto* peer_disps = (int*)malloc(nprocs * sizeof(int));
+    for (int r = 0; r < nprocs; r++) {
+        peer_devs[r] = both[2 * r];
+        peer_disps[r] = both[2 * r + 1];
+    }
+    free(both);
 
     // spanning communicators get a zero-size key window: the app only uses
     // the handle for shared_query/free, and registering device memory with
@@ -396,6 +408,7 @@ int MPI_Win_create(void* base, MPI_Aint size, int disp,
     m->handles = handles;
     m->peer_sizes = peer_sizes;
     m->peer_devs = peer_devs;
+    m->peer_disps = peer_disps;
     m->opened = (void**)calloc(nprocs, sizeof(void*));
     m->self_base = base;
     m->self_base_owned = false;
@@ -556,7 +569,10 @@ int MPI_Win_free(MPI_Win* win)
             if (i != m->rank && m->opened[i])
                 cudaIpcCloseMemHandle(m->opened[i]);
         }
+        if (m->dev_handle)
+            cudaFree(m->dev_handle);
         free(m->peer_devs);
+        free(m->peer_disps);
         free(m->reachable);
         if (m->self_base_owned)
             cudaFree(m->self_base);
@@ -567,6 +583,102 @@ int MPI_Win_free(MPI_Win* win)
         g_wins.erase(it);
     }
     return PMPI_Win_free(win);
+}
+
+// Proposed MPI_Win_get_device_handle (mpiwg-rma PR #13). Copies this window's
+// peer table into device memory as an mpiw_dev_win and returns its device
+// address as *device_win. Purely local -- no collectives -- so ranks may call
+// it at different times.
+int MPIX_Win_get_device_handle(MPI_Win win, MPI_Info info, MPI_Win* device_win)
+{
+    if (!device_win) return MPI_ERR_ARG;
+
+    // Only windows over device memory are in g_wins. That also rejects
+    // dynamic windows, which the interposer never intercepts.
+    auto it = g_wins.find(win);
+    if (it == g_wins.end()) return MPI_ERR_WIN;
+    WinMeta* m = it->second;
+    if (m->fabric) {
+        LOG("MPIX_Win_get_device_handle: fabric windows are not supported yet");
+        return MPI_ERR_WIN;
+    }
+
+    // info must name the device, and it must be the one the window was
+    // created on: the peer mappings in opened[] were made on that device.
+    char val[32];
+    int flag = 0;
+    if (info != MPI_INFO_NULL)
+        PMPI_Info_get(info, "device_id", sizeof(val) - 1, val, &flag);
+    if (!flag) return MPI_ERR_INFO_NOKEY;
+    char* end;
+    long dev_id = strtol(val, &end, 10);
+    if (end == val || *end != '\0' || dev_id != m->peer_devs[m->rank])
+        return MPI_ERR_INFO_VALUE;
+
+    // A second call returns the handle the first one built.
+    if (m->dev_handle) {
+        *device_win = (MPI_Win)m->dev_handle;
+        return MPI_SUCCESS;
+    }
+
+    // One allocation: the struct, then its arrays, 8-byte members first so
+    // every array stays aligned. Built on the host, then copied over whole.
+    const int n = m->size;
+    const size_t off_base = sizeof(mpiw_dev_win);
+    const size_t off_size = off_base + n * sizeof(char*);
+    const size_t off_disp = off_size + n * sizeof(MPI_Aint);
+    const size_t off_tran = off_disp + n * sizeof(int);
+    const size_t total    = off_tran + n * sizeof(int);
+
+    char* host = (char*)calloc(1, total);
+    if (!host) return MPI_ERR_NO_MEM;
+
+    // Allocate on the window's device without changing the caller's.
+    int prev_dev = 0;
+    cudaGetDevice(&prev_dev);
+    cudaSetDevice((int)dev_id);
+    char* dev = nullptr;
+    if (cudaMalloc((void**)&dev, total) != cudaSuccess) {
+        cudaGetLastError();
+        cudaSetDevice(prev_dev);
+        free(host);
+        return MPI_ERR_NO_MEM;
+    }
+
+    auto* w      = (mpiw_dev_win*)host;
+    auto* base   = (char**)(host + off_base);
+    auto* size   = (MPI_Aint*)(host + off_size);
+    auto* disp   = (int*)(host + off_disp);
+    auto* tran   = (int*)(host + off_tran);
+    w->my_rank   = m->rank;
+    w->comm_size = n;
+    w->device_id = (int)dev_id;
+    // The array pointers hold DEVICE addresses: the GPU follows them.
+    w->peer_base = (char**)(dev + off_base);
+    w->peer_size = (MPI_Aint*)(dev + off_size);
+    w->disp_unit = (int*)(dev + off_disp);
+    w->transport = (int*)(dev + off_tran);
+
+    for (int r = 0; r < n; r++) {
+        // shared_query applies every reachability check the host path uses
+        // (probe verdict, peer-access gate) and opens the peer if needed.
+        void* p = nullptr;
+        MPI_Aint sz = 0;
+        bool ok = MPI_Win_shared_query(win, r, &sz, nullptr, &p) == MPI_SUCCESS
+                  && p != nullptr;
+        base[r] = ok ? (char*)p : nullptr;
+        size[r] = ok ? sz : 0;
+        disp[r] = m->peer_disps[r];
+        tran[r] = ok ? MPIX_TRANSPORT_IPC : MPIX_TRANSPORT_NONE;
+    }
+
+    cudaMemcpy(dev, host, total, cudaMemcpyHostToDevice);
+    cudaSetDevice(prev_dev);
+    free(host);
+
+    m->dev_handle = dev;
+    *device_win = (MPI_Win)dev;
+    return MPI_SUCCESS;
 }
 
 } // extern "C"
