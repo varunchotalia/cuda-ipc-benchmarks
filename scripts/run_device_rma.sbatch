@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=device_rma
-#SBATCH --partition=debug-h200x4
+#SBATCH --partition=h200x4
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --gpus=4

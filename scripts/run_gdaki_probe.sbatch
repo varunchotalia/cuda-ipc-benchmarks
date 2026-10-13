@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gdaki_probe
-#SBATCH --partition=debug-h200x4
+#SBATCH --partition=h200x4
 #SBATCH --nodes=1
 #SBATCH --ntasks=2
 #SBATCH --gpus=2
