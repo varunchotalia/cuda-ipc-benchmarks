@@ -69,8 +69,12 @@ missing is GPUDirect RDMA, which lets the NIC read and write GPU memory.
 | Node | `nvidia_peermem` | Driver `RegistryDwords` |
 |---|---|---|
 | h200x4-01 | not loaded | empty |
+| h200x4-03 | not loaded | empty |
+| h200x8-03 | not loaded | empty |
 | b40x4-05 | not loaded | empty |
-| h200x8 | check queued | |
 
-The kernel on b40x4-05 does export dma-buf symbols. Whether a dma-buf route
+Jobs 957154, 958822, 958823, 958824. Every node has an active NDR
+InfiniBand NIC (400 Gb/s on h200x8-03, 200 Gb/s on the others).
+
+The kernels on these nodes do export dma-buf symbols. Whether a dma-buf route
 could stand in for `nvidia_peermem` here has not been checked.
