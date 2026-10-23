@@ -14,8 +14,8 @@
 // the cost of the handle lookup and argument checks, and rt - ct is the cost
 // of not knowing the scope at compile time.
 //
-// Timing: thread 0's clock64() around ITERS back-to-back operations, after a
-// warmup launch; the median of TRIALS launches. Cycles are the primary unit;
+// Timing: thread 0's clock64() around ITERS back-to-back operations, after
+// WARMUP untimed launches; the median of TRIALS launches. Cycles are the primary unit;
 // ns use the SM clock attribute, which may differ from the clock actually run.
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -28,6 +28,7 @@
 #define MAXB   4096   // largest message, bytes
 #define ITERS  1000
 #define TRIALS 7
+#define WARMUP 5    // untimed launches per case
 
 enum { RAW = 0, CT = 1, RT = 2 };
 enum { OP_PUT = 0, OP_PUT_FLUSH = 1, OP_GET_FLUSH = 2 };
@@ -156,11 +157,11 @@ int main(int argc, char** argv)
     CK(cudaMemset(a.rc, 0, sizeof(int)));
 
     if (rank == 0)
-        printf("# node %s GPU %d, np=%d, target %s, SM clock %.0f MHz, %d iters x %d trials (median)\n"
+        printf("# node %s GPU %d, np=%d, target %s, SM clock %.0f MHz, %d warmup, %d iters x %d trials (median)\n"
                "# %-9s %-6s %5s %9s %9s %9s %9s %9s %9s\n",
                getenv("SLURMD_NODENAME") ? getenv("SLURMD_NODENAME") : "?", dev, size,
                target == rank ? "self (same device)" : "rank+1", clock_khz / 1e3,
-               ITERS, TRIALS, "op", "scope", "bytes",
+               WARMUP, ITERS, TRIALS, "op", "scope", "bytes",
                "raw_cyc", "ct_cyc", "rt_cyc", "raw_ns", "ct-raw", "rt-ct");
 
     MPI_Win_lock_all(0, win);
@@ -173,7 +174,7 @@ int main(int argc, char** argv)
             a.bytes = b;
             a.scope_rt = sc;
             long long t[TRIALS];
-            launch(m, o, sc, a);                      // warmup
+            for (int w = 0; w < WARMUP; w++) launch(m, o, sc, a);
             CK(cudaDeviceSynchronize());
             for (int k = 0; k < TRIALS; k++) {
                 launch(m, o, sc, a);
