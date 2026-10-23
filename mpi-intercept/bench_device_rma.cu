@@ -167,7 +167,7 @@ int main(int argc, char** argv)
     MPI_Win_lock_all(0, win);
     const int sizes[] = {8, 64, 512, 4096};
     for (int o = 0; o < 3; o++)
-    for (int sc = 0; sc < 3; sc++)
+    for (int sc : {MPIX_SCOPE_WARP, MPIX_SCOPE_THREAD, MPIX_SCOPE_BLOCK})
     for (int b : sizes) {
         double cyc[3];
         for (int m = 0; m < 3; m++) {
