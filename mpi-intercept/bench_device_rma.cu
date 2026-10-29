@@ -14,14 +14,10 @@
 // the cost of the handle lookup and argument checks, and rt - ct is the cost
 // of not knowing the scope at compile time.
 //
-// A second table ("SYNC") compares two ways for a warp or block to do one
-// operation, for raw and ct:
-//   coop   the threads split one copy (warp/block scope); flush ends with a
-//          warp/block barrier
-//   indep  every thread copies the whole message itself (thread scope) to
-//          the same place; flush is a fence only, no barrier
-// At 8 bytes the split saves nothing, so coop - indep is about the cost of
-// the barrier. The thread group is one thread, where coop and indep agree.
+// A second table ("PERTHR") keeps the bytes copied PER THREAD fixed and grows
+// the message with the scope: a warp moves 32x and a block 256x what one
+// thread moves. Every thread then does the same work, so how much longer a
+// warp or block takes than one thread is the cost of working as a group.
 //
 // Timing: thread 0's clock64() around ITERS back-to-back operations, after
 // WARMUP untimed launches; the median of TRIALS launches. Cycles are the primary unit;
@@ -34,7 +30,8 @@
 #include "mpiw_device.cuh"
 
 #define NSLOTS 64     // operations cycle through this many slots of the window
-#define MAXB   4096   // largest message, bytes
+#define MAXB   4096          // largest message in the first table, bytes
+#define MAXMSG (MAXB * 256)   // largest in PERTHR: 4 KiB per thread x 256 threads
 #define ITERS  1000
 #define TRIALS 7
 #define WARMUP 5    // untimed launches per case
@@ -48,38 +45,36 @@ static const int   SCOPE_THREADS[] = {1, 32, 256};
 struct Args {
     char*      raw_peer;   // target window base from host MPI_Win_shared_query
     MPI_Win    dwin;       // device handle
-    char*      local;      // origin buffer, MAXB bytes
+    char*      local;      // origin buffer, MAXMSG bytes
     int        bytes;
+    int        slot;       // bytes between the window slots operations cycle through
     int        target;
     int        scope_rt;   // only read by the RT kernels
     long long* cycles;     // out: thread 0's cycles for ITERS operations
     int*       rc;         // out: OR of all MPIX return codes
 };
 
-// S sets how many threads run. INDEP: each of them does the whole operation
-// alone, at thread scope (see "SYNC" above).
-template <int METHOD, int OP, int S, bool INDEP = false>
+template <int METHOD, int OP, int S>
 __global__ void bench(Args a)
 {
-    constexpr int CS = INDEP ? MPIX_SCOPE_THREAD : S;    // scope of each call
-    const int scope = (METHOD == RT) ? a.scope_rt : CS;  // RT: opaque to the compiler
+    const int scope = (METHOD == RT) ? a.scope_rt : S;   // RT: opaque to the compiler
     unsigned me, n;
-    mpix_scope_rank(CS, &me, &n);                         // used by raw only
+    mpix_scope_rank(S, &me, &n);                          // used by raw only
     const int count = a.bytes / 8;
     int rc = 0;
 
     __syncthreads();
     long long t0 = clock64();
     for (int it = 0; it < ITERS; it++) {
-        MPI_Aint disp = (MPI_Aint)(it % NSLOTS) * (MAXB / 8);   // disp_unit = 8
+        MPI_Aint disp = (MPI_Aint)(it % NSLOTS) * (a.slot / 8);   // disp_unit = 8
         if (METHOD == RAW) {
             char* peer = a.raw_peer + disp * 8;
             if (OP == OP_GET_FLUSH) mpix_copy(a.local, peer, a.bytes, me, n);
             else                    mpix_copy(peer, a.local, a.bytes, me, n);
             if (OP != OP_PUT) {     // the same steps MPIX_Win_flush_all takes
                 __threadfence_system();
-                if (CS == MPIX_SCOPE_WARP)  __syncwarp();
-                if (CS == MPIX_SCOPE_BLOCK) __syncthreads();
+                if (S == MPIX_SCOPE_WARP)  __syncwarp();
+                if (S == MPIX_SCOPE_BLOCK) __syncthreads();
             }
         } else {
             if (OP == OP_GET_FLUSH)
@@ -112,20 +107,6 @@ static void launch(int m, int o, int s, const Args& a) {
     if (m == RAW) go_o<RAW>(o, s, a); else if (m == CT) go_o<CT>(o, s, a); else go_o<RT>(o, s, a);
 }
 
-// The same, with every launched thread doing the whole operation alone.
-template <int M, int O, int S> static void gi(const Args& a) {
-    bench<M, O, S, true><<<1, SCOPE_THREADS[S]>>>(a);
-}
-template <int M, int O> static void gi_s(int s, const Args& a) {
-    if (s == 0) gi<M, O, 0>(a); else if (s == 1) gi<M, O, 1>(a); else gi<M, O, 2>(a);
-}
-template <int M> static void gi_o(int o, int s, const Args& a) {
-    if (o == 0) gi_s<M, 0>(s, a); else if (o == 1) gi_s<M, 1>(s, a); else gi_s<M, 2>(s, a);
-}
-static void launch_indep(int m, int o, int s, const Args& a) {
-    if (m == RAW) gi_o<RAW>(o, s, a); else gi_o<CT>(o, s, a);
-}
-
 #define CK(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { \
     fprintf(stderr, "rank %d: %s failed: %s\n", rank, #call, cudaGetErrorString(e_)); \
     MPI_Abort(MPI_COMM_WORLD, 1); } } while (0)
@@ -145,7 +126,7 @@ int main(int argc, char** argv)
     int clock_khz = 0;
     CK(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, dev));
 
-    const size_t win_bytes = (size_t)NSLOTS * MAXB;
+    const size_t win_bytes = (size_t)NSLOTS * MAXMSG;
     char* win_buf;
     CK(cudaMalloc((void**)&win_buf, win_bytes));
     CK(cudaMemset(win_buf, 0, win_bytes));
@@ -176,8 +157,8 @@ int main(int argc, char** argv)
     a.raw_peer = (char*)raw_peer;
     a.dwin = dwin;
     a.target = target;
-    CK(cudaMalloc((void**)&a.local, MAXB));
-    CK(cudaMemset(a.local, 1, MAXB));
+    CK(cudaMalloc((void**)&a.local, MAXMSG));
+    CK(cudaMemset(a.local, 1, MAXMSG));
     CK(cudaMalloc((void**)&a.cycles, sizeof(long long)));
     CK(cudaMalloc((void**)&a.rc, sizeof(int)));
     CK(cudaMemset(a.rc, 0, sizeof(int)));
@@ -207,6 +188,7 @@ int main(int argc, char** argv)
     MPI_Win_lock_all(0, win);
     const int sizes[] = {8, 64, 512, 4096};
     const int scope_order[] = {MPIX_SCOPE_WARP, MPIX_SCOPE_THREAD, MPIX_SCOPE_BLOCK};
+    a.slot = MAXB;   // same spacing as earlier runs
     for (int o = 0; o < 3; o++)
     for (int sc : scope_order)
     for (int b : sizes) {
@@ -223,22 +205,20 @@ int main(int argc, char** argv)
     }
 
     if (rank == 0)
-        printf("# SYNC: group = threads launched; coop splits one copy, indep has every thread copy it all\n"
-               "# %-9s %-6s %5s %9s %9s %9s %9s %9s %9s\n",
-               "op", "group", "bytes", "raw_coop", "raw_ind", "ct_coop", "ct_ind",
-               "raw_c-i", "ct_c-i");
+        printf("# PERTHR: every thread copies per_thr bytes; msg = per_thr x threads in the scope\n"
+               "# %-9s %7s %-6s %7s %9s %9s\n",
+               "op", "per_thr", "scope", "msg", "raw_cyc", "ct_cyc");
     for (int o = 0; o < 3; o++)
-    for (int sc : scope_order)
-    for (int b : sizes) {
-        a.bytes = b;
+    for (int p : sizes)
+    for (int sc : scope_order) {
+        a.bytes = p * SCOPE_THREADS[sc];
+        a.slot = std::max(a.bytes, MAXB);   // thread rows match the first table
         a.scope_rt = sc;
-        double rc_ = measure([&] { launch(RAW, o, sc, a); });
-        double ri  = measure([&] { launch_indep(RAW, o, sc, a); });
-        double cc  = measure([&] { launch(CT, o, sc, a); });
-        double ci  = measure([&] { launch_indep(CT, o, sc, a); });
+        double raw = measure([&] { launch(RAW, o, sc, a); });
+        double ct  = measure([&] { launch(CT, o, sc, a); });
         if (rank == 0)
-            printf("SYNC   %-9s %-6s %5d %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f\n",
-                   OP_NAME[o], SCOPE_NAME[sc], b, rc_, ri, cc, ci, rc_ - ri, cc - ci);
+            printf("PERTHR %-9s %7d %-6s %7d %9.1f %9.1f\n",
+                   OP_NAME[o], p, SCOPE_NAME[sc], a.bytes, raw, ct);
     }
     MPI_Win_unlock_all(win);
 
