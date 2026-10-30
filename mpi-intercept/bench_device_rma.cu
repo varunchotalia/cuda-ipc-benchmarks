@@ -18,6 +18,7 @@
 // the message with the scope: a warp moves 32x and a block 256x what one
 // thread moves. Every thread then does the same work, so how much longer a
 // warp or block takes than one thread is the cost of working as a group.
+// Its slots are MAXMSG apart, so no two messages overlap.
 //
 // Timing: thread 0's clock64() around ITERS back-to-back operations, after
 // WARMUP untimed launches; the median of TRIALS launches. Cycles are the primary unit;
@@ -47,14 +48,15 @@ struct Args {
     MPI_Win    dwin;       // device handle
     char*      local;      // origin buffer, MAXMSG bytes
     int        bytes;
-    int        slot;       // bytes between the window slots operations cycle through
     int        target;
     int        scope_rt;   // only read by the RT kernels
     long long* cycles;     // out: thread 0's cycles for ITERS operations
     int*       rc;         // out: OR of all MPIX return codes
 };
 
-template <int METHOD, int OP, int S>
+// SLOT: bytes between the window slots the operations cycle through. A
+// compile-time constant, so it adds no instructions to the timed loop.
+template <int METHOD, int OP, int S, int SLOT = MAXB>
 __global__ void bench(Args a)
 {
     const int scope = (METHOD == RT) ? a.scope_rt : S;   // RT: opaque to the compiler
@@ -66,7 +68,7 @@ __global__ void bench(Args a)
     __syncthreads();
     long long t0 = clock64();
     for (int it = 0; it < ITERS; it++) {
-        MPI_Aint disp = (MPI_Aint)(it % NSLOTS) * (a.slot / 8);   // disp_unit = 8
+        MPI_Aint disp = (MPI_Aint)(it % NSLOTS) * (SLOT / 8);   // disp_unit = 8
         if (METHOD == RAW) {
             char* peer = a.raw_peer + disp * 8;
             if (OP == OP_GET_FLUSH) mpix_copy(a.local, peer, a.bytes, me, n);
@@ -93,18 +95,22 @@ __global__ void bench(Args a)
     if (threadIdx.x == 0) *a.cycles = t1 - t0;
 }
 
-// Pick the instantiation for (method, op, scope) at runtime.
-template <int M, int O, int S> static void go(const Args& a) {
-    bench<M, O, S><<<1, SCOPE_THREADS[S]>>>(a);
+// Pick the instantiation for (method, op, scope) at runtime. Slot spacing:
+// MAXB for the first table, MAXMSG for PERTHR so its messages never overlap.
+template <int M, int O, int S, int SL> static void go(const Args& a) {
+    bench<M, O, S, SL><<<1, SCOPE_THREADS[S]>>>(a);
 }
-template <int M, int O> static void go_s(int s, const Args& a) {
-    if (s == 0) go<M, O, 0>(a); else if (s == 1) go<M, O, 1>(a); else go<M, O, 2>(a);
+template <int M, int O, int SL> static void go_s(int s, const Args& a) {
+    if (s == 0) go<M, O, 0, SL>(a); else if (s == 1) go<M, O, 1, SL>(a); else go<M, O, 2, SL>(a);
 }
-template <int M> static void go_o(int o, int s, const Args& a) {
-    if (o == 0) go_s<M, 0>(s, a); else if (o == 1) go_s<M, 1>(s, a); else go_s<M, 2>(s, a);
+template <int M, int SL> static void go_o(int o, int s, const Args& a) {
+    if (o == 0) go_s<M, 0, SL>(s, a); else if (o == 1) go_s<M, 1, SL>(s, a); else go_s<M, 2, SL>(s, a);
 }
 static void launch(int m, int o, int s, const Args& a) {
-    if (m == RAW) go_o<RAW>(o, s, a); else if (m == CT) go_o<CT>(o, s, a); else go_o<RT>(o, s, a);
+    if (m == RAW) go_o<RAW, MAXB>(o, s, a); else if (m == CT) go_o<CT, MAXB>(o, s, a); else go_o<RT, MAXB>(o, s, a);
+}
+static void launch_pt(int m, int o, int s, const Args& a) {
+    if (m == RAW) go_o<RAW, MAXMSG>(o, s, a); else go_o<CT, MAXMSG>(o, s, a);
 }
 
 #define CK(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { \
@@ -188,7 +194,6 @@ int main(int argc, char** argv)
     MPI_Win_lock_all(0, win);
     const int sizes[] = {8, 64, 512, 4096};
     const int scope_order[] = {MPIX_SCOPE_WARP, MPIX_SCOPE_THREAD, MPIX_SCOPE_BLOCK};
-    a.slot = MAXB;   // same spacing as earlier runs
     for (int o = 0; o < 3; o++)
     for (int sc : scope_order)
     for (int b : sizes) {
@@ -212,10 +217,9 @@ int main(int argc, char** argv)
     for (int p : sizes)
     for (int sc : scope_order) {
         a.bytes = p * SCOPE_THREADS[sc];
-        a.slot = std::max(a.bytes, MAXB);   // thread rows match the first table
         a.scope_rt = sc;
-        double raw = measure([&] { launch(RAW, o, sc, a); });
-        double ct  = measure([&] { launch(CT, o, sc, a); });
+        double raw = measure([&] { launch_pt(RAW, o, sc, a); });
+        double ct  = measure([&] { launch_pt(CT, o, sc, a); });
         if (rank == 0)
             printf("PERTHR %-9s %7d %-6s %7d %9.1f %9.1f\n",
                    OP_NAME[o], p, SCOPE_NAME[sc], a.bytes, raw, ct);
