@@ -41,112 +41,27 @@ It also checks these error returns:
 | device | displacement past the window end | `MPI_ERR_RMA_RANGE` |
 | device | invalid scope | `MPI_ERR_ARG` |
 
-## Overhead over raw pointer access: job 2337920
+## Overhead and cost of acting as a group: job 2337920
 
 `mpi-intercept/bench_device_rma.cu`, run by `scripts/run_device_rma_bench.sbatch`.
 Node h200x4-01, one H200, np=1, so every operation targets the rank's own
 window (same device). Commit `8614db9`.
 
-Each case is timed three ways, all with the same copy loop:
+Every thread copies the same number of bytes, and the message grows with the
+scope: 32x for a warp, 256x for a block. Every thread does the same work, so
+how much longer a warp or block takes than one thread is the cost of acting
+as a group. Each case is timed two ways, with the same copy loop:
 
 - **raw**: copy through the pointer from host `MPI_Win_shared_query`, with no
   lookup and no checks.
 - **ct**: `MPIX_Put` / `MPIX_Get`, with the scope as a compile-time constant.
-- **rt**: the same calls, with the scope passed as a kernel argument.
 
-So **ct-raw** is the cost of the handle lookup and the argument checks, and
-**rt-ct** is the cost of not knowing the scope at compile time.
+So **ct-raw** is the cost of the handle lookup and the argument checks.
 
 Values are cycles per operation: thread 0's `clock64()` over 1000
 back-to-back operations, after 5 untimed launches, median of 7 launches.
-Scopes were measured in the order warp, thread, block. ns uses the 1785 MHz
-clock attribute, which may not be the clock the GPU actually ran at.
-
-**Put (no flush)**
-
-| bytes | scope | raw | ct | rt | ct-raw | rt-ct |
-|--:|---|--:|--:|--:|--:|--:|
-| 8 | thread | 171 | 634 | 660 | 463 | 26 |
-| 8 | warp | 194 | 688 | 806 | 494 | 118 |
-| 8 | block | 197 | 655 | 691 | 458 | 36 |
-| 64 | thread | 552 | 1024 | 1144 | 473 | 119 |
-| 64 | warp | 194 | 688 | 806 | 494 | 118 |
-| 64 | block | 197 | 655 | 691 | 458 | 36 |
-| 512 | thread | 2960 | 3466 | 5011 | 506 | 1545 |
-| 512 | warp | 250 | 744 | 862 | 494 | 118 |
-| 512 | block | 182 | 640 | 675 | 457 | 35 |
-| 4096 | thread | 22252 | 23066 | 35950 | 814 | 12885 |
-| 4096 | warp | 1247 | 1741 | 1859 | 494 | 118 |
-| 4096 | block | 261 | 718 | 751 | 457 | 34 |
-
-**Put, then flush after every operation**
-
-| bytes | scope | raw | ct | rt | ct-raw | rt-ct |
-|--:|---|--:|--:|--:|--:|--:|
-| 8 | thread | 1575 | 2830 | 2903 | 1255 | 72 |
-| 8 | warp | 1601 | 2882 | 3035 | 1281 | 153 |
-| 8 | block | 2203 | 3407 | 3536 | 1204 | 129 |
-| 64 | thread | 2218 | 3487 | 3666 | 1269 | 179 |
-| 64 | warp | 1606 | 2887 | 3037 | 1281 | 150 |
-| 64 | block | 2199 | 3399 | 3540 | 1200 | 140 |
-| 512 | thread | 8262 | 9552 | 11280 | 1290 | 1729 |
-| 512 | warp | 1914 | 3194 | 3349 | 1281 | 154 |
-| 512 | block | 2200 | 3409 | 3548 | 1209 | 138 |
-| 4096 | thread | 54752 | 56370 | 70327 | 1618 | 13958 |
-| 4096 | warp | 6319 | 7600 | 7780 | 1281 | 180 |
-| 4096 | block | 2865 | 4073 | 4184 | 1208 | 110 |
-
-**Get, then flush after every operation**
-
-| bytes | scope | raw | ct | rt | ct-raw | rt-ct |
-|--:|---|--:|--:|--:|--:|--:|
-| 8 | thread | 1546 | 2799 | 2876 | 1254 | 77 |
-| 8 | warp | 1581 | 2851 | 3001 | 1270 | 150 |
-| 8 | block | 2204 | 3395 | 3534 | 1190 | 140 |
-| 64 | thread | 2180 | 3435 | 3611 | 1255 | 176 |
-| 64 | warp | 1585 | 2854 | 3008 | 1269 | 154 |
-| 64 | block | 2201 | 3389 | 3527 | 1188 | 138 |
-| 512 | thread | 8013 | 9262 | 10973 | 1249 | 1711 |
-| 512 | warp | 1888 | 3157 | 3308 | 1270 | 151 |
-| 512 | block | 2201 | 3395 | 3535 | 1194 | 140 |
-| 4096 | thread | 54656 | 55940 | 69846 | 1284 | 13906 |
-| 4096 | warp | 6336 | 7604 | 7764 | 1268 | 159 |
-| 4096 | block | 2788 | 4064 | 4171 | 1276 | 107 |
-
-What it shows:
-
-1. **The lookup and checks cost about 460-510 cycles (about 255-285 ns) per
-   Put or Get** up to 512 bytes, nearly independent of scope. That is 3.7x
-   the raw time for an 8-byte put, and about 4% for a 4 KiB thread-scope put.
-2. **With a flush after every operation, the extra cost is about 1190-1290
-   cycles (about 665-720 ns)**, more for a 4 KiB thread-scope put (1618). Why
-   it is larger than without flush is not known yet. One guess, not
-   verified: the fence stops the next operation's handle loads from
-   overlapping with earlier work.
-3. **A runtime scope costs little at warp and block scope** (34-180 cycles),
-   **but a lot at thread scope for larger messages** (+12884 cycles, 56%, for
-   a 4 KiB put). With a compile-time thread scope the compiler knows one
-   thread does the whole copy and optimizes the loop. With a runtime scope it
-   cannot. So the cost is the lost loop optimization, not the scope branches.
-
-Static instruction counts agree. Compiled for sm_90, the rt kernel is the
-same for all three scopes (175 instructions, 21 branches). The ct warp and
-block kernels have 155-165 instructions and 17 branches, so the compiler does
-remove the scope branches when it knows the scope. The ct kernels issue 11
-global loads where raw issues 2: the handle lookups.
-
-These kernels compile to the same code as in the earlier runs on this node
-(jobs 966563, 966580), and agree with them: ct-raw is 494 cycles for an
-8-byte warp put in all three. Only the flush rows vary between runs, by up
-to 3.5%.
-
-## Cost of acting as a group: job 2337920
-
-Same run. Here every thread copies the same number of bytes, and the message
-grows with the scope: 32x for a warp, 256x for a block. Every thread does
-the same work, so how much longer a warp or block takes than one thread is
-the cost of acting as a group. Slots are 1 MiB apart so no two messages
-overlap; the thread rows match the first table's to within 0.8%.
+Scopes were measured in the order warp, thread, block. Slots are 1 MiB apart
+so no two messages overlap.
 
 **Put (no flush)**
 
@@ -218,8 +133,9 @@ What it shows:
    a warp, +2651 for a block), because flush waits until all of the group's
    data has arrived.
 4. **The MPIX overhead does not depend on the group size**: ct-raw is about
-   455-495 cycles at 8 bytes per thread for all three scopes, and small next
-   to the copy for the largest messages.
+   455-495 cycles (about 255-280 ns at the 1785 MHz clock attribute) at 8
+   bytes per thread for all three scopes, about 1180-1290 with a flush after
+   every operation (up to 64 bytes per thread), and small next to the copy for the largest messages.
 
 Caveats: one run, one node, same device only, timed from one thread.
 
