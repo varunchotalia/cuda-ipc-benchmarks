@@ -3,7 +3,9 @@
 Code and data for the paper *MPI Windows as an Abstraction for CUDA
 Interprocess Communication* (Chotalia, Schuchart, Hammond). WinIPC, an MPI
 profiling-interface library, gives applications CUDA IPC peer pointers through
-`MPI_Win_allocate` / `MPI_Win_shared_query` / `MPI_Win_free`. The repository
+`MPI_Win_allocate` / `MPI_Win_shared_query` / `MPI_Win_free`. To see how it
+works and what it does not support, start with
+[mpi-intercept/README.md](mpi-intercept/README.md). The repository
 also holds the three case studies (distributed transpose, five-point stencil,
 CUDA LULESH) and the comparison baselines (GPU-aware MPI, host-staged MPI,
 NVSHMEM, a host shared window).
@@ -205,7 +207,7 @@ g++ -O2 -fPIC -shared \
     -I${CUDA_HOME}/include -I${MPI_HOME}/include \
     mpi-intercept/mpiwrap_ipc.cc \
     -o libmpiwrap.so \
-    -L${CUDA_HOME}/lib64 -lcudart \
+    -L${CUDA_HOME}/lib64 -L${CUDA_HOME}/lib64/stubs -lcudart -lcuda \
     -L${MPI_HOME}/lib -lmpi
 ```
 
